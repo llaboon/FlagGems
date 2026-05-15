@@ -91,7 +91,6 @@ def test_accuracy_amax(shape, dim, keepdim, dtype):
 def test_accuracy_aminmax(shape, dim, keepdim, dtype):
     inp = torch.randn(shape, dtype=dtype, device=flag_gems.device)
     ref_inp = to_reference(inp)
-
     # torch.aminmax only supports single dim, use torch.amin/amax for multi-dim
     if isinstance(dim, list):
         ref_min = torch.amin(ref_inp, dim=dim, keepdim=keepdim)
