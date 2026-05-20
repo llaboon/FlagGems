@@ -184,7 +184,6 @@ def avg_pool2d_backward_kernel(
     w_in_offsets = w_block_idx * BLOCK_W + tl.arange(0, BLOCK_W)
 
     grad_acc = tl.zeros((BLOCK_H, BLOCK_W), dtype=tl.float32)
-
     for kh_loop in tl.static_range(0, kernel_h):
         for kw_loop in tl.static_range(0, kernel_w):
             h_out_num = h_in_offsets[:, None] + padding_h - kh_loop * dilation_h
@@ -237,7 +236,10 @@ def avg_pool2d_backward_kernel(
             )
             grad_out_val = tl.load(grad_out_ptr, mask=out_mask, other=0.0)
             grad_acc += tl.where(out_mask, grad_out_val / divisor, 0.0)
-
+    if pid_nc == 0 and pid_hw == 0:
+        tl.device_print("h_out", h_out)
+        tl.device_print("w_out", w_out)
+        tl.device_print("out_mask", out_mask)
     grad_input_store_ptr = (
         grad_input_block_ptr
         + h_in_offsets[:, None] * in_stride_h
@@ -366,7 +368,6 @@ def avg_pool2d_backward(
         raise ValueError("divisor_override cannot be zero")
 
     grad_output = grad_output.contiguous()
-
     kernel_h, kernel_w, stride_h, stride_w, padding_h, padding_w = _parse_pool_params(
         kernel_size, stride, padding
     )
@@ -375,7 +376,7 @@ def avg_pool2d_backward(
     in_n, in_c, in_h, in_w = input.shape
     out_h, out_w = grad_output.shape[2], grad_output.shape[3]
 
-    grad_input = torch.zeros_like(input, dtype=torch.float32)
+    grad_input = torch.zeros_like(input)
 
     if grad_output.numel() == 0:
         return grad_input.to(grad_output.dtype)
@@ -384,7 +385,12 @@ def avg_pool2d_backward(
         in_n * in_c,
         triton.cdiv(in_h, meta["BLOCK_H"]) * triton.cdiv(in_w, meta["BLOCK_W"]),
     )
-
+    print("kernel_size", kernel_h, kernel_w)
+    print("stride", stride_h, stride_w)
+    print("padding", padding_h, padding_w)
+    print("out shape", out_h, out_w)
+    print("divisor_override", divisor_override)
+    print("count_include_pad", count_include_pad)
     avg_pool2d_backward_kernel[grid](
         grad_output,
         grad_input,
@@ -412,5 +418,8 @@ def avg_pool2d_backward(
         COUNT_INCLUDE_PAD=count_include_pad,
         divisor_override=divisor_override if divisor_override is not None else 0.0,
     )
-
+    if divisor_override is not None:
+        if count_include_pad:
+            scale = (kernel_h * kernel_w) / divisor_override
+            grad_input.mul_(scale)
     return grad_input.to(grad_output.dtype)

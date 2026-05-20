@@ -1,0 +1,126 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.15, pytest-8.1.0, pluggy-1.6.0 -- /root/miniconda/envs/python310_torch25_cuda/bin/python
+cachedir: .pytest_cache
+metadata: {'Python': '3.10.15', 'Platform': 'Linux-5.10.0-1.0.0.35-x86_64-with-glibc2.31', 'Packages': {'pytest': '8.1.0', 'pluggy': '1.6.0'}, 'Plugins': {'html': '4.1.1', 'typeguard': '4.4.4', 'anyio': '4.9.0', 'metadata': '3.1.1', 'timeout': '2.3.1'}}
+rootdir: /workspace/FlagGems
+configfile: pytest.ini
+plugins: html-4.1.1, typeguard-4.4.4, anyio-4.9.0, metadata-3.1.1, timeout-2.3.1
+collecting ... collected 1 item
+
+test_reduction_ops.py::test_accuracy_avg_pool2d_backward[dtype2-shape7-2-2-padding7-False-True-None] kernel_size 2 2
+stride 2 2
+padding 1 0
+out shape 9 10
+divisor_override None
+count_include_pad True
+FAILED
+
+=================================== FAILURES ===================================
+_ test_accuracy_avg_pool2d_backward[dtype2-shape7-2-2-padding7-False-True-None] _
+
+shape = (2, 8, 16, 20), kernel_size = 2, stride = 2, padding = (1, 0)
+ceil_mode = False, count_include_pad = True, divisor_override = None
+dtype = torch.bfloat16
+
+    @pytest.mark.avg_pool2d_bwd
+    @pytest.mark.parametrize(
+        "shape, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override",
+        AVGPOOL2D_CONFIGS,
+    )
+    @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
+    def test_accuracy_avg_pool2d_backward(
+        shape,
+        kernel_size,
+        stride,
+        padding,
+        ceil_mode,
+        count_include_pad,
+        divisor_override,
+        dtype,
+    ):
+        inp = torch.randn(shape, dtype=dtype, device=flag_gems.device, requires_grad=True)
+        ref_inp = to_reference(inp, True)
+        ref_out = torch.ops.aten.avg_pool2d(
+            ref_inp,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            ceil_mode=ceil_mode,
+            count_include_pad=count_include_pad,
+            divisor_override=divisor_override,
+        )
+        out_grad = torch.randn_like(ref_out, dtype=inp.dtype, device=flag_gems.device)
+        ref_out_grad = to_reference(out_grad, True)
+        ref_inp_grad = torch.ops.aten.avg_pool2d_backward(
+            ref_out_grad,
+            ref_inp,
+            kernel_size,
+            stride,
+            padding,
+            ceil_mode,
+            count_include_pad,
+            divisor_override,
+        )
+    
+        with flag_gems.use_gems():
+    #        breakpoint()
+            res_inp_grad = torch.ops.aten.avg_pool2d_backward(
+                out_grad,
+                inp,
+                kernel_size,
+                stride,
+                padding,
+                ceil_mode,
+                count_include_pad,
+                divisor_override,
+            )
+>       gems_assert_close(res_inp_grad, ref_inp_grad, dtype)
+
+test_reduction_ops.py:1610: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+accuracy_utils.py:238: in gems_assert_close
+    flag_gems.testing.assert_close(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+res = tensor([[[[-1.5869e-02,  2.3242e-01,  3.5645e-02,  ...,  1.2061e-01,
+            1.5137e-01, -2.0605e-01],
+          [...       0.0000e+00,  0.0000e+00]]]], device='cuda:0', dtype=torch.bfloat16,
+       grad_fn=<AvgPool2DBackwardBackward0>)
+ref = tensor([[[[-0.0157, -0.0157,  0.2324,  ..., -0.1475,  0.2422,  0.2422],
+          [-0.1631, -0.1631, -0.0361,  ...,  0... -0.4180,  ..., -0.2812,  0.2734,  0.2734]]]],
+       device='cuda:0', dtype=torch.bfloat16, grad_fn=<ToCopyBackward0>)
+dtype = torch.bfloat16, equal_nan = False, reduce_dim = 1, atol = 0.0001
+
+    def assert_close(res, ref, dtype, equal_nan=False, reduce_dim=1, atol=1e-4):
+        if dtype is None:
+            dtype = torch.float32
+        assert res.dtype == dtype
+        ref = ref.to(dtype)
+        res, ref = _maybe_move_to_cpu(res, ref)
+        rtol = RESOLUTION[dtype]
+>       torch.testing.assert_close(
+            res, ref, atol=atol * reduce_dim, rtol=rtol, equal_nan=equal_nan
+        )
+E       AssertionError: Tensor-likes are not close!
+E       
+E       Mismatched elements: 5108 / 5120 (99.8%)
+E       Greatest absolute difference: 1.296875 at index (0, 4, 4, 7) (up to 0.0001 allowed)
+E       Greatest relative difference: 1120.0 at index (0, 4, 2, 5) (up to 0.016 allowed)
+
+../src/flag_gems/testing/__init__.py:71: AssertionError
+=============================== warnings summary ===============================
+tests/test_reduction_ops.py::test_accuracy_avg_pool2d_backward[dtype2-shape7-2-2-padding7-False-True-None]
+  /root/miniconda/envs/python310_torch25_cuda/lib/python3.10/site-packages/torch/library.py:323: UserWarning: Warning only once for all operators,  other operators may also be overridden.
+    Overriding a previously registered kernel for the same operator and the same dispatch key
+    operator: aten::_log_softmax(Tensor self, int dim, bool half_to_float) -> Tensor
+      registered at aten/src/ATen/RegisterSchema.cpp:6
+    dispatch key: CUDA
+    previous kernel: registered at aten/src/ATen/RegisterCPU.cpp:30476
+         new kernel: registered at /dev/null:1598 (Triggered internally at ../aten/src/ATen/core/dispatch/OperatorEntry.cpp:155.)
+    self.m.impl(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED test_reduction_ops.py::test_accuracy_avg_pool2d_backward[dtype2-shape7-2-2-padding7-False-True-None]
+========================= 1 failed, 1 warning in 1.90s =========================
+fuckyou

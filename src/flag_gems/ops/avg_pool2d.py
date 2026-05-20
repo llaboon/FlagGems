@@ -365,7 +365,7 @@ def avg_pool2d_backward(
     divisor_override,
 ):
     logger.debug("GEMS AVG_POOL2D BACKWARD")
-
+    breakpoint()
     if divisor_override is not None and divisor_override == 0:
         raise ValueError("divisor_override cannot be zero")
 

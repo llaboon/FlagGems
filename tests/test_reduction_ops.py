@@ -1573,7 +1573,6 @@ def test_accuracy_avg_pool2d_backward(
 ):
     inp = torch.randn(shape, dtype=dtype, device=flag_gems.device, requires_grad=True)
     ref_inp = to_reference(inp, True)
-
     ref_out = torch.ops.aten.avg_pool2d(
         ref_inp,
         kernel_size=kernel_size,
@@ -1597,6 +1596,7 @@ def test_accuracy_avg_pool2d_backward(
     )
 
     with flag_gems.use_gems():
+#        breakpoint()
         res_inp_grad = torch.ops.aten.avg_pool2d_backward(
             out_grad,
             inp,
@@ -1607,6 +1607,8 @@ def test_accuracy_avg_pool2d_backward(
             count_include_pad,
             divisor_override,
         )
+    print(ref_inp_grad.flatten()[:20])
+    print(res_inp_grad.flatten()[:20])
     gems_assert_close(res_inp_grad, ref_inp_grad, dtype)
 
 
