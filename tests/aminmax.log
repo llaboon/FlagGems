@@ -1,0 +1,28 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.15, pytest-9.0.3, pluggy-1.6.0 -- /root/miniconda/envs/python310_torch25_cuda/bin/python
+cachedir: .pytest_cache
+metadata: {'Python': '3.10.15', 'Platform': 'Linux-5.15.0-177-generic-x86_64-with-glibc2.31', 'Packages': {'pytest': '9.0.3', 'pluggy': '1.6.0'}, 'Plugins': {'timeout': '2.3.1', 'html': '4.1.1', 'typeguard': '4.4.4', 'metadata': '3.1.1', 'anyio': '4.9.0'}}
+rootdir: /workspace/FlagGems
+configfile: pytest.ini
+plugins: timeout-2.3.1, html-4.1.1, typeguard-4.4.4, metadata-3.1.1, anyio-4.9.0
+collecting ... collected 1 item
+
+test_aminmax.py::test_aminmax[dtype2-True-0-shape0] pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,    0) _max: -0.032959
+pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,    1) _max: -0.032959
+pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,    2) _max: -0.032959
+pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,    3) _max: -0.032959
+pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,    4) _max: -0.032959
+pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,    5) _max: -0.032959
+pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,    6) _max: -0.032959
+pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,    7) _max: -0.032959
+pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,    8) _max: -0.032959
+pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,    9) _max: -0.032959
+pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,   10) _max: -0.032959
+pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,   11) _max: -0.032959
+pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,   12) _max: -0.032959
+pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,   13) _max: -0.032959
+pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,   14) _max: -0.032959
+pid (0, 0, 0), hw_id (11, 0, 0), loop_index (0, 0, 0) idx (0,   15) _max: -0.032959
+PASSED
+
+============================== 1 passed in 1.92s ===============================
