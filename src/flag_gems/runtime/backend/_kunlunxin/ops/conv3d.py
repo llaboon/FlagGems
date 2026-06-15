@@ -277,12 +277,6 @@ def conv3d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
                 dilation_width,
             )
 
-            print(
-                "[DEBUG][same padding]",
-                f"depth=({pd0},{pd1})",
-                f"height=({ph0},{ph1})",
-                f"width=({pw0},{pw1})",
-            )
 
             input = torch.nn.functional.pad(
                 input,
