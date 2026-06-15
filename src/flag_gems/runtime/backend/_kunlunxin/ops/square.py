@@ -16,7 +16,7 @@ def square_func(x):
 
 
 def square(A):
-    logger.debug("GEMS SQUARE")
+    logger.debug("GEMS_KUNLUNXIN SQUARE")
     if A.dtype == torch.bfloat16:
         out = square_func(A.float())
         return out.bfloat16()
@@ -24,7 +24,7 @@ def square(A):
 
 
 def square_out(A, *, out=None):
-    logger.debug("GEMS SQUARE_OUT")
+    logger.debug("GEMS_KUNLUNXIN SQUARE_OUT")
     if out is None:
         return square_func(A)
     square_func(A, out0=out)
@@ -32,7 +32,7 @@ def square_out(A, *, out=None):
 
 
 def square_(A):
-    logger.debug("GEMS SQUARE_")
+    logger.debug("GEMS_KUNLUNXIN SQUARE_")
     if A.dtype == torch.bfloat16:
         square_func(A.float(), out0=A)
         A = A.bfloat16()
