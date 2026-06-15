@@ -191,7 +191,7 @@ def diff(
     Returns:
         Tensor containing the n-th order differences
     """
-    logger.debug("GEMS DIFF")
+    logger.debug("GEMS_KUNLUNXIN DIFF")
     if n == 0:
         return inp.clone()
 
