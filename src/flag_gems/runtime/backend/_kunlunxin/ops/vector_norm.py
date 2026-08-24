@@ -24,6 +24,9 @@ from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import dim_compress, libentry, tl_extra_shim
 from flag_gems.utils import triton_lang_extension as ext
 
+_NATIVE_VECTOR_NORM = torch.library.get_kernel("aten::linalg_vector_norm", "CUDA")
+_CUDA_KEYSET = torch._C.DispatchKeySet(torch._C.DispatchKey.CUDA)
+
 logger = logging.getLogger(__name__)
 pow = tl_extra_shim.pow
 
@@ -396,26 +399,15 @@ def vector_norm(x, ord=2, dim=None, keepdim=False, dtype=None):
                     mid, out, ord, MID_SIZE, BLOCK_MID, buffer_size_limit=2048
                 )
         else:
-            shape = list(x.shape)
-            dim = [d % x.ndim for d in dim]
-            x = dim_compress(x, dim)
-            N = 1
-            for i in dim:
-                N *= shape[i]
-                shape[i] = 1
-            M = x.numel() // N
-            out = torch.empty(shape, dtype=dtype, device=x.device)
-            grid = lambda META: (triton.cdiv(M, META["BLOCK_M"]),)
-            if ord == 2:
-                l2_norm_kernel[grid](x, out, M, N)
-            elif ord == float("inf"):
-                max_norm_kernel[grid](x, out, M, N)
-            elif ord == -float("inf"):
-                min_norm_kernel[grid](x, out, M, N)
-            elif ord == 0:
-                l0_norm_kernel[grid](x, out, M, N)
-            else:
-                v_norm_kernel[grid](x, out, M, N, ord, isCloseUnrollControl=True)
+            # Partial-dim path. dim_compress() materializes the view via
+            # permute().contiguous(); on XPU torch copy_ of strided/broadcast
+            # sources is broken (CUDA error: invalid device function), so the
+            # vendor kernels below could never run on the compressed tensor.
+            # Native CUDA (torch_xmlir) linalg_vector_norm is correct on P800
+            # for every dim form; redispatch instead of materializing.
+            return _NATIVE_VECTOR_NORM.call_boxed(
+                _CUDA_KEYSET, x, ord, dim, keepdim, dtype=dtype
+            )
     if not keepdim:
         out = out.squeeze(dim=dim)
     return out
