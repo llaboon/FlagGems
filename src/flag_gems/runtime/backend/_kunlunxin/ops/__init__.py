@@ -207,6 +207,7 @@ from .nanmedian import nanmedian, nanmedian_dim, nanmedian_dim_values, nanmedian
 from .narrow_copy import narrow_copy
 from .ne import ne, ne_scalar
 from .neg import neg, neg_
+from .nextafter import nextafter, nextafter_
 from .negative import negative
 from .new_full import new_full
 from .new_ones import new_ones
@@ -616,6 +617,8 @@ __all__ = [
     "ne_scalar",
     "neg",
     "neg_",
+    "nextafter",
+    "nextafter_",
     "negative",
     "not_equal",
     "not_equal_scalar",
