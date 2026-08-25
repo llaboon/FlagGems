@@ -254,6 +254,7 @@ from .heaviside_ import heaviside_  # noqa: F401
 from .histc import histc
 from .hstack import hstack
 from .hypot import hypot
+from .hypot_ import hypot_
 from .igamma_ import igamma_  # noqa: F401
 from .igammac import igammac, igammac_out
 from .igammac_ import igammac_
@@ -881,6 +882,7 @@ __all__ = [
     "gt_scalar",
     "gt_scalar_",
     "gt_tensor_",
+    "hypot_",
     "hadamard_transform",
     "hardsigmoid",
     "hardsigmoid_out",
