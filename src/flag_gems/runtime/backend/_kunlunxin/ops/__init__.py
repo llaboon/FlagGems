@@ -368,6 +368,7 @@ from .native_group_norm import native_group_norm
 from .native_layer_norm import native_layer_norm
 from .ne import ne, ne_, ne_scalar, ne_scalar_
 from .neg import neg, neg_
+from .nextafter import nextafter, nextafter_
 from .negative import negative
 from .negative_ import negative_
 from .new_full import new_full
@@ -1040,6 +1041,8 @@ __all__ = [
     "ne_scalar_",
     "neg",
     "neg_",
+    "nextafter",
+    "nextafter_",
     "negative",
     "negative_",
     "new_full",
