@@ -11,12 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 from flag_gems.ops.flash_attention_backward import (  # noqa: F401
     efficient_attention_backward,
     scaled_dot_product_efficient_attention_backward,
 )
-
 from ._amp_foreach_non_finite_check_and_unscale_ import (
     _amp_foreach_non_finite_check_and_unscale_,
 )
@@ -598,6 +596,7 @@ from .xlogy import (
 from .zero import zero, zero_, zero_out
 from .zeros import zeros
 from .zeros_like import zeros_like
+from .hypot_ import hypot_
 
 __all__ = [
     "_amp_foreach_non_finite_check_and_unscale_",
@@ -1322,4 +1321,5 @@ __all__ = [
     "zero_out",
     "zeros",
     "zeros_like",
+    "hypot_",
 ]
