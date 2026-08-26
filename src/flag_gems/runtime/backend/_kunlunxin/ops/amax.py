@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 _NATIVE_AMAX = torch.library.get_kernel("aten::amax", "CUDA")
 _CUDA_KEYSET = torch._C.DispatchKeySet(torch._C.DispatchKey.CUDA)
+
+
 @libentry()
 @triton.jit
 def amax_kernel_1(
