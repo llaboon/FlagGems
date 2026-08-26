@@ -579,6 +579,7 @@ from .unique_consecutive import unique_consecutive
 from .unique_dim import unique_dim
 from .upsample_bicubic2d_aa import _upsample_bicubic2d_aa
 from .upsample_bicubic2d_aa_backward import _upsample_bicubic2d_aa_backward
+from .upsample_bilinear2d import upsample_bilinear2d
 from .upsample_linear1d import upsample_linear1d
 from .upsample_linear1d_backward import upsample_linear1d_backward
 from .upsample_nearest1d import upsample_nearest1d
@@ -1305,6 +1306,7 @@ __all__ = [
     "uniform_",
     "unique_consecutive",
     "unique_dim",
+    "upsample_bilinear2d",
     "upsample_linear1d",
     "upsample_linear1d_backward",
     "upsample_nearest1d",
