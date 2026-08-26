@@ -62,12 +62,17 @@ def batch_norm_stats_kernel(
     base = pid * spatial_dim
     s = tl.zeros([TILE_S], dtype=tl.float32)
     sq = tl.zeros([TILE_S], dtype=tl.float32)
+    # XPU masked loads with runtime masks can leak whole lanes (see the
+    # nll_loss / vector_norm fixes): clamp the index to a valid one and
+    # zero invalid lanes with tl.where instead of relying on the mask.
     for off in range(0, spatial_dim, TILE_S):
         idx = off + tl.arange(0, TILE_S)
         mask = idx < spatial_dim
-        x = tl.load(input_pointer + base + idx, mask=mask, other=0.0).to(tl.float32)
+        idx_safe = tl.minimum(idx, spatial_dim - 1)
+        x = tl.load(input_pointer + base + idx_safe).to(tl.float32)
+        x = tl.where(mask, x, 0.0)
         s += x
-        sq += tl.where(mask, x * x, 0.0)
+        sq += x * x
     tl.store(sum_pointer + pid, tl.sum(s))
     tl.store(sqsum_pointer + pid, tl.sum(sq))
 
@@ -97,8 +102,15 @@ def batch_norm_combine_kernel(
     c = tl.program_id(axis=0)
     idx = tl.arange(0, TILE_N)
     mask = idx < batch_dim
-    part_sum = tl.load(part_sum_pointer + c + idx * feat_dim, mask=mask, other=0.0)
-    part_sqsum = tl.load(part_sqsum_pointer + c + idx * feat_dim, mask=mask, other=0.0)
+    # Same XPU masked-load leak, and worse here: TILE_N is
+    # next_pow2(batch_dim), so e.g. batch 2050 -> tile 4096 lets the
+    # masked tail read up to ~2x past the partials buffer. Clamp to a
+    # valid index and zero invalid lanes with tl.where.
+    idx_safe = tl.minimum(idx, batch_dim - 1)
+    part_sum = tl.load(part_sum_pointer + c + idx_safe * feat_dim)
+    part_sqsum = tl.load(part_sqsum_pointer + c + idx_safe * feat_dim)
+    part_sum = tl.where(mask, part_sum, 0.0)
+    part_sqsum = tl.where(mask, part_sqsum, 0.0)
     ssum = tl.sum(part_sum)
     sqsum = tl.sum(part_sqsum)
     mean = ssum / count
@@ -322,202 +334,6 @@ def batch_norm_forward_kernel(
             )
 
 
-def batch_norm_heur_block_m(args):
-    return min(64, triton.next_power_of_2(args.get("batch_dim", 0)))
-
-
-def batch_norm_heur_block_n(args):
-    BLOCK_M = batch_norm_heur_block_m(args)
-    BLOCK_N = triton.next_power_of_2(args.get("spatial_dim", 0))
-    return min(BLOCK_N, max(1, 2**14 // BLOCK_M))
-
-
-@libentry()
-@triton.heuristics(
-    values={
-        "BLOCK_M": batch_norm_heur_block_m,
-        "BLOCK_N": batch_norm_heur_block_n,
-    },
-)
-@triton.jit
-def batch_norm_backward_kernel(
-    output_grad_pointer,
-    input_pointer,
-    mean_pointer,
-    inv_std_pointer,
-    weight_pointer,
-    input_grad_pointer,
-    weight_grad_pointer,
-    bias_grad_pointer,
-    batch_dim,
-    spatial_dim,
-    output_grad_batch_stride,
-    output_grad_feat_stride,
-    output_grad_spatial_stride,
-    input_batch_stride,
-    input_feat_stride,
-    input_spatial_stride,
-    input_grad_batch_stride,
-    input_grad_feat_stride,
-    input_grad_spatial_stride,
-    input_grad_mask: tl.constexpr,
-    weight_grad_mask: tl.constexpr,
-    bias_grad_mask: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-):
-    feat_pid = tl.program_id(axis=0)
-
-    mean = tl.load(feat_pid + mean_pointer).to(tl.float32)
-    inv_std = tl.load(feat_pid + inv_std_pointer).to(tl.float32)
-
-    term1 = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-    term2 = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
-
-    for m_step in range(0, tl.cdiv(batch_dim, BLOCK_M)):
-        batch_offset = m_step * BLOCK_M + tl.arange(0, BLOCK_M)
-        batch_mask = batch_offset < batch_dim
-
-        for n_step in range(0, tl.cdiv(spatial_dim, BLOCK_N)):
-            spatial_offset = n_step * BLOCK_N + tl.arange(0, BLOCK_N)
-            spatial_mask = spatial_offset < spatial_dim
-
-            curr_output_grad_pointer = (
-                output_grad_pointer
-                + output_grad_feat_stride * feat_pid
-                + output_grad_batch_stride * batch_offset[:, None]
-                + output_grad_spatial_stride * spatial_offset[None, :]
-            )
-            curr_input_pointer = (
-                input_pointer
-                + input_feat_stride * feat_pid
-                + input_batch_stride * batch_offset[:, None]
-                + input_spatial_stride * spatial_offset[None, :]
-            )
-
-            mask = batch_mask[:, None] & spatial_mask[None, :]
-            curr_input = tl.load(curr_input_pointer, mask=mask, other=0).to(tl.float32)
-
-            curr_pre_lin = ((curr_input - mean) * inv_std).to(tl.float32)
-            curr_output_grad = tl.load(
-                curr_output_grad_pointer, mask=mask, other=0.0
-            ).to(tl.float32)
-
-            term1 += curr_pre_lin * curr_output_grad
-            term2 += curr_output_grad
-
-    term1 = tl.sum(term1)
-    term2 = tl.sum(term2)
-
-    if weight_grad_mask:
-        tl.store(feat_pid + weight_grad_pointer, term1)
-    if bias_grad_mask:
-        tl.store(feat_pid + bias_grad_pointer, term2)
-
-    if not input_grad_mask:
-        return
-
-    if weight_pointer:
-        weight = tl.load(feat_pid + weight_pointer).to(tl.float32)
-    else:
-        weight = 1.0
-        weight = weight.to(tl.float32)
-
-    count = batch_dim * spatial_dim
-
-    for m_step in range(0, tl.cdiv(batch_dim, BLOCK_M)):
-        for n_step in range(0, tl.cdiv(spatial_dim, BLOCK_N)):
-            batch_offset = m_step * BLOCK_M + tl.arange(0, BLOCK_M)
-            batch_mask = batch_offset < batch_dim
-
-            spatial_offset = n_step * BLOCK_N + tl.arange(0, BLOCK_N)
-            spatial_mask = spatial_offset < spatial_dim
-
-            curr_output_grad_pointer = (
-                output_grad_pointer
-                + output_grad_feat_stride * feat_pid
-                + output_grad_batch_stride * batch_offset[:, None]
-                + output_grad_spatial_stride * spatial_offset[None, :]
-            )
-            curr_input_pointer = (
-                input_pointer
-                + input_feat_stride * feat_pid
-                + input_batch_stride * batch_offset[:, None]
-                + input_spatial_stride * spatial_offset[None, :]
-            )
-            curr_input_grad_pointer = (
-                input_grad_pointer
-                + input_grad_feat_stride * feat_pid
-                + input_grad_batch_stride * batch_offset[:, None]
-                + input_grad_spatial_stride * spatial_offset[None, :]
-            )
-
-            curr_input = tl.load(
-                curr_input_pointer, mask=batch_mask[:, None] & spatial_mask[None, :]
-            ).to(tl.float32)
-            curr_pre_lin = (curr_input - mean) * inv_std
-            curr_output_grad = tl.load(
-                curr_output_grad_pointer,
-                mask=batch_mask[:, None] & spatial_mask[None, :],
-            ).to(tl.float32)
-            curr_input_grad = (
-                inv_std
-                * weight
-                * (curr_output_grad - (term1 * curr_pre_lin + term2) / count)
-            )
-            tl.store(
-                curr_input_grad_pointer,
-                curr_input_grad,
-                mask=batch_mask[:, None] & spatial_mask[None, :],
-            )
-
-
-# Per-channel discrete-read count (batch_dim * spatial_dim) at/below which the single
-# fused (transpose) kernel's low launch floor beats the contiguous 3-stage path. Above it
-# the fused kernel's stride-C discrete reads blow up (measured crossover ~0.4ms floor).
-# NOTE: the fused kernel is INFERENCE-ONLY here — its training reduction is numerically
-# broken on XPU (verified: garbage output). Training must always use the contiguous path.
-BN_FUSED_MAX_ELEMS = 2048
-
-
-def _batch_norm_fused_infer(input, weight, bias, running_mean, running_var, eps):
-    # Original single fused kernel (transpose), INFERENCE ONLY. Low launch floor; used for
-    # small batch_dim*spatial_dim so its stride-C discrete reads stay cheap.
-    input_3d_i = make_3d_for_bn(input)
-    m, n, k = input_3d_i.shape
-    input_3d_f = input_3d_i.permute(0, 2, 1).reshape(-1, n)
-    input_3d = make_3d_for_bn(input_3d_f)
-
-    batch_dim, feat_dim, spatial_dim = input_3d.shape
-    output = torch.empty_like(input_3d)
-
-    mean = torch.empty(feat_dim, device=input.device, dtype=input.dtype)
-    inv_std = torch.empty(feat_dim, device=input.device, dtype=input.dtype)
-
-    with torch_device_fn.device(input.device):
-        batch_norm_forward_kernel[(feat_dim,)](
-            input_3d,
-            weight,
-            bias,
-            mean,
-            inv_std,
-            output,
-            running_mean,
-            running_var,
-            batch_dim,
-            spatial_dim,
-            *input_3d.stride(),
-            *output.stride(),
-            0.1,
-            eps,
-            is_train=False,
-            buffer_size_limit=2048,
-        )
-
-    output_reshaped = output.reshape(m, k, n).permute(0, 2, 1)
-    return output_reshaped.view_as(input), mean, inv_std
-
-
 def batch_norm(
     input: Tensor,
     weight=None,
@@ -530,21 +346,11 @@ def batch_norm(
 ):
     logger.debug("GEMS_KUNLUNXIN BATCH_NORM")
 
-    # Inference on small shapes -> low-floor fused kernel (correct in inference). All other
-    # cases (any training, or large inference) -> contiguous 3-stage path, which is correct
-    # everywhere and avoids the fused kernel's large-spatial discrete-access catastrophe.
+    # Always use the contiguous 3-stage path: the fused infer kernel's
+    # permute(0, 2, 1).reshape forces a strided copy_ that fails to launch
+    # on XPU ("CUDA error: invalid device function") for small eval shapes.
     x_nat = make_3d_for_bn(input)  # [N, C, S]
     batch_dim, _, spatial_dim = x_nat.shape
-    if (
-        not training
-        and running_mean is not None
-        and running_var is not None
-        and batch_dim * spatial_dim <= BN_FUSED_MAX_ELEMS
-    ):
-        return _batch_norm_fused_infer(
-            input, weight, bias, running_mean, running_var, eps
-        )
-
     input_3d = make_3d_for_bn(input).contiguous()  # [N, C, S] contiguous
     batch_dim, feat_dim, spatial_dim = input_3d.shape
     n_slices = batch_dim * feat_dim
@@ -628,52 +434,72 @@ def batch_norm_backward(
     eps=1e-05,
     output_mask=None,
 ):
+    # The triton backward kernel below was only ever launched with
+    # spatial_dim == 1: the old wrapper transposed inputs into [N*S, C, 1]
+    # via permute(0, 2, 1).reshape, whose strided copy_ fails on XPU
+    # ("invalid device function"), and feeding the kernel the natural
+    # [N, C, S] layout (spatial > 1) trips an XPU compiler crash
+    # (RuntimeError: PassManager::run failed). Compute the backward with
+    # eager fp32 torch ops on the natural contiguous layout instead.
     logger.debug("GEMS_KUNLUNXIN BATCH_NORM_BACKWARD")
-    input_3d_i = make_3d_for_bn(input)
-    m, n, k = input_3d_i.shape
-    input_3d_f = input_3d_i.permute(0, 2, 1).reshape(-1, n)
-    input_3d = make_3d_for_bn(input_3d_f)
-
-    output_grad_3d_i = make_3d_for_bn(grad_out)
-    output_grad_3d_f = output_grad_3d_i.permute(0, 2, 1).reshape(-1, n)
-    output_grad_3d = make_3d_for_bn(output_grad_3d_f)
-
-    batch_dim, feat_dim, spatial_dim = input_3d.shape
-
+    if output_mask is None:
+        output_mask = [True, True, True]
+    input_3d = make_3d_for_bn(input).contiguous()
+    grad_3d = make_3d_for_bn(grad_out).contiguous()
+    n, c, sp = input_3d.shape
+    count = n * sp
+    # CPU aten returns EMPTY save tensors in eval mode; fall back to the
+    # running stats whenever the saves are absent or empty.
+    if save_mean is not None and save_mean.numel() > 0:
+        mean = save_mean.to(torch.float32)
+    else:
+        mean = running_mean.to(torch.float32)
+    if save_invstd is not None and save_invstd.numel() > 0:
+        inv_std = save_invstd.to(torch.float32)
+    else:
+        inv_std = torch.rsqrt(running_var.to(torch.float32) + eps)
+    x = input_3d.to(torch.float32)
+    dy = grad_3d.to(torch.float32)
+    xhat = (x - mean.view(1, c, 1)) * inv_std.view(1, c, 1)
+    # flag_gems sum_dim dim_compress permutes non-last reduction dims onto
+    # a strided layout whose copy_ fails to launch on XPU ("invalid device
+    # function"). Reduce the contiguous last dim only (identity permute,
+    # no copy), then fold the batch dim with a ones-vector GEMM.
+    if n > 0:
+        ones_n = torch.ones((1, n), dtype=torch.float32, device=input.device)
+        sum_dy = torch.mm(ones_n, dy.sum(dim=2)).view(c)
+        sum_dy_xhat = torch.mm(ones_n, (dy * xhat).sum(dim=2)).view(c)
+    else:
+        # zero-batch input: gems mm heuristic divides by K == 0
+        sum_dy = torch.zeros(c, dtype=torch.float32, device=input.device)
+        sum_dy_xhat = torch.zeros(c, dtype=torch.float32, device=input.device)
+    if weight is not None:
+        w = weight.to(torch.float32)
+    else:
+        w = torch.ones_like(mean)
+    grads = []
     if output_mask[0]:
-        input_grad = torch.empty_like(input_3d)
+        if train:
+            gi = inv_std.view(1, c, 1) * w.view(1, c, 1) * (
+                dy
+                - sum_dy.view(1, c, 1) / count
+                - xhat * sum_dy_xhat.view(1, c, 1) / count
+            )
+        else:
+            # eval: running stats are constants, no centering correction
+            gi = inv_std.view(1, c, 1) * w.view(1, c, 1) * dy
+        grads.append(gi.to(input.dtype).view_as(input))
     else:
-        input_grad = None
+        grads.append(None)
     if output_mask[1]:
-        weight_grad = torch.empty((feat_dim,), dtype=input.dtype, device=input.device)
+        if weight is not None:
+            grads.append(sum_dy_xhat.to(input.dtype))
+        else:
+            grads.append(torch.zeros(c, dtype=input.dtype, device=input.device))
     else:
-        weight_grad = None
+        grads.append(None)
     if output_mask[2]:
-        bias_grad = torch.empty((feat_dim,), dtype=input.dtype, device=input.device)
+        grads.append(sum_dy.to(input.dtype))
     else:
-        bias_grad = None
-
-    with torch_device_fn.device(input.device):
-        batch_norm_backward_kernel[(feat_dim, 1, 1)](
-            output_grad_3d,
-            input_3d,
-            save_mean,
-            save_invstd,
-            weight,
-            input_grad,
-            weight_grad,
-            bias_grad,
-            batch_dim,
-            spatial_dim,
-            *output_grad_3d.stride(),
-            *input_3d.stride(),
-            *input_grad.stride(),
-            *output_mask,
-            buffer_size_limit=2048,
-        )
-
-    return (
-        input_grad.reshape(m, k, n).permute(0, 2, 1).view_as(input),
-        weight_grad,
-        bias_grad,
-    )
+        grads.append(None)
+    return tuple(grads)
