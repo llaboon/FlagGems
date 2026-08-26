@@ -312,6 +312,7 @@ from .upsample_bicubic2d_aa import _upsample_bicubic2d_aa
 from .upsample_bilinear2d import upsample_bilinear2d
 from .upsample_bilinear2d_aa import _upsample_bilinear2d_aa
 from .upsample_linear1d import upsample_linear1d
+from .upsample_linear1d_backward import upsample_linear1d_backward
 from .upsample_nearest1d import upsample_nearest1d
 from .upsample_nearest2d import upsample_nearest2d
 from .upsample_trilinear3d import upsample_trilinear3d
@@ -760,6 +761,7 @@ __all__ = [
     "uniform_",
     "upsample_bilinear2d",
     "upsample_linear1d",
+    "upsample_linear1d_backward",
     "upsample_nearest1d",
     "upsample_nearest2d",
     "upsample_trilinear3d",
