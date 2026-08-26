@@ -25,10 +25,9 @@ from flag_gems.utils import dim_compress, libentry
 from flag_gems.utils import triton_lang_extension as ext
 
 from ..utils.block_size_utils import get_block_size_1d
+from ..utils.reduce_native import dim_compress_materializes, native_reduce
 
 logger = logging.getLogger(__name__)
-
-from ..utils.reduce_native import dim_compress_materializes, native_reduce
 
 
 @libentry()

@@ -22,12 +22,9 @@ from flag_gems import runtime
 from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import dim_compress, libentry
 
-logger = logging.getLogger(__name__)
+from ..utils.reduce_native import dim_compress_materializes, native_var_mean_parts
 
-from ..utils.reduce_native import (
-    dim_compress_materializes,
-    native_var_mean_parts,
-)
+logger = logging.getLogger(__name__)
 
 
 @triton.jit

@@ -25,10 +25,9 @@ from flag_gems.utils import dim_compress, libentry
 from flag_gems.utils import triton_lang_extension as ext
 
 from ..utils.block_size_utils import get_block_size_1d
+from ..utils.reduce_native import dim_compress_materializes, native_reduce
 
 logger = logging.getLogger(__name__)
-
-from ..utils.reduce_native import dim_compress_materializes, native_reduce
 
 
 @libentry()
@@ -193,9 +192,7 @@ def mean_dim(x, dim, keepdim=False, *, dtype=None):
             M1 *= s
         try:
             if M1 < 8 or M1 > 8192:
-                raise RuntimeError(
-                    "skip bmm fast path for tiny/huge free dim"
-                )
+                raise RuntimeError("skip bmm fast path for tiny/huge free dim")
             x3 = x.reshape(M0, N, M1)
             ones = torch.ones((M0, 1, N), dtype=x.dtype, device=x.device)
             out = (torch.bmm(ones, x3).reshape(M0, M1) / N).to(dtype)
