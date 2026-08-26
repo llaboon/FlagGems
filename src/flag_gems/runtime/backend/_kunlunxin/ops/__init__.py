@@ -600,6 +600,10 @@ from .zeros_like import zeros_like
 from .hypot_ import hypot_
 from .upsample_bilinear2d import upsample_bilinear2d
 from .upsample_bilinear2d_aa import _upsample_bilinear2d_aa
+from .upsample_nearest_exact1d_backward import (
+    _upsample_nearest_exact1d_backward,
+    _upsample_nearest_exact1d_backward_grad_input,
+)
 
 __all__ = [
     "_amp_foreach_non_finite_check_and_unscale_",
@@ -1329,4 +1333,6 @@ __all__ = [
     "hypot_",
     "_upsample_bilinear2d_aa",
     "upsample_bilinear2d",
+    "_upsample_nearest_exact1d_backward",
+    "_upsample_nearest_exact1d_backward_grad_input",
 ]
