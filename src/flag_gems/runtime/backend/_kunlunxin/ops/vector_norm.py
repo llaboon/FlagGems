@@ -73,13 +73,17 @@ def l2_norm_kernel(X, Out, M, N, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
 def l2_norm_kernel_1(
     X, Mid, M, BLOCK_SIZE: tl.constexpr, buffer_size_limit: tl.constexpr
 ):
+    # XPU masked-load hazard: on tail blocks the mask is mis-applied at
+    # 1024-lane granularity and real elements get duplicated into the
+    # reduction (deterministic +9216 count at (200,40999,3), heap-content
+    # independent). Avoid masked loads entirely: clamp indices in-bounds
+    # and select the contribution with tl.where afterwards.
     pid = ext.program_id(0).to(tl.int64)
     offset = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    X = X + offset
+    idx = tl.minimum(offset, (M - 1).to(tl.int64))
     Mid = Mid + pid
-    mask = offset < M
-
-    x = tl.load(X, mask=mask, other=0.0).to(tl.float32)
+    x = tl.load(X + idx).to(tl.float32)
+    x = tl.where(offset < M, x, 0.0)
     mid = tl.sum(x * x)
     tl.store(Mid, mid)
 
@@ -89,10 +93,11 @@ def l2_norm_kernel_1(
 def l2_norm_kernel_2(
     Mid, Out, MID_SIZE, BLOCK_MID: tl.constexpr, buffer_size_limit: tl.constexpr
 ):
+    # See the kernel_1 note: no masked loads; clamp + tl.where.
     offset = tl.arange(0, BLOCK_MID)
-    Mid = Mid + offset
-    mask = offset < MID_SIZE
-    mid = tl.load(Mid, mask=mask, other=0.0).to(tl.float32)
+    idx = tl.minimum(offset, (MID_SIZE - 1).to(tl.int64))
+    mid = tl.load(Mid + idx).to(tl.float32)
+    mid = tl.where(offset < MID_SIZE, mid, 0.0)
     out = tl.sqrt(tl.sum(mid))
     tl.store(Out, out)
 
@@ -131,14 +136,18 @@ def max_norm_kernel(X, Out, M, N, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
 def max_norm_kernel_1(
     X, Mid, M, BLOCK_SIZE: tl.constexpr, buffer_size_limit: tl.constexpr
 ):
+    # XPU masked-load hazard: on tail blocks the mask is mis-applied at
+    # 1024-lane granularity and real elements get duplicated into the
+    # reduction (deterministic +9216 count at (200,40999,3), heap-content
+    # independent). Avoid masked loads entirely: clamp indices in-bounds
+    # and select the contribution with tl.where afterwards.
     pid = ext.program_id(0).to(tl.int64)
     offset = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    X = X + offset
+    idx = tl.minimum(offset, (M - 1).to(tl.int64))
     Mid = Mid + pid
-    mask = offset < M
-
-    x = tl.load(X, mask=mask, other=0.0).to(tl.float32)
-    mid = tl.max(tl.abs(x))
+    x = tl.load(X + idx).to(tl.float32)
+    a = tl.where(offset < M, tl.abs(x), 0.0)
+    mid = tl.max(a)
     tl.store(Mid, mid)
 
 
@@ -147,10 +156,11 @@ def max_norm_kernel_1(
 def max_norm_kernel_2(
     Mid, Out, MID_SIZE, BLOCK_MID: tl.constexpr, buffer_size_limit: tl.constexpr
 ):
+    # See the kernel_1 note: no masked loads; clamp + tl.where.
     offset = tl.arange(0, BLOCK_MID)
-    Mid = Mid + offset
-    mask = offset < MID_SIZE
-    mid = tl.load(Mid, mask=mask, other=0.0).to(tl.float32)
+    idx = tl.minimum(offset, (MID_SIZE - 1).to(tl.int64))
+    mid = tl.load(Mid + idx).to(tl.float32)
+    mid = tl.where(offset < MID_SIZE, mid, 0.0)
     out = tl.max(mid)
     tl.store(Out, out)
 
@@ -189,14 +199,18 @@ def min_norm_kernel(X, Out, M, N, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
 def min_norm_kernel_1(
     X, Mid, M, BLOCK_SIZE: tl.constexpr, buffer_size_limit: tl.constexpr
 ):
+    # XPU masked-load hazard: on tail blocks the mask is mis-applied at
+    # 1024-lane granularity and real elements get duplicated into the
+    # reduction (deterministic +9216 count at (200,40999,3), heap-content
+    # independent). Avoid masked loads entirely: clamp indices in-bounds
+    # and select the contribution with tl.where afterwards.
     pid = ext.program_id(0).to(tl.int64)
     offset = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    X = X + offset
+    idx = tl.minimum(offset, (M - 1).to(tl.int64))
     Mid = Mid + pid
-    mask = offset < M
-
-    x = tl.load(X, mask=mask, other=float("inf")).to(tl.float32)
-    mid = tl.min(tl.abs(x))
+    x = tl.load(X + idx).to(tl.float32)
+    a = tl.where(offset < M, tl.abs(x), float("inf"))
+    mid = tl.min(a)
     tl.store(Mid, mid)
 
 
@@ -205,10 +219,11 @@ def min_norm_kernel_1(
 def min_norm_kernel_2(
     Mid, Out, MID_SIZE, BLOCK_MID: tl.constexpr, buffer_size_limit: tl.constexpr
 ):
+    # See the kernel_1 note: no masked loads; clamp + tl.where.
     offset = tl.arange(0, BLOCK_MID)
-    Mid = Mid + offset
-    mask = offset < MID_SIZE
-    mid = tl.load(Mid, mask=mask, other=float("inf")).to(tl.float32)
+    idx = tl.minimum(offset, (MID_SIZE - 1).to(tl.int64))
+    mid = tl.load(Mid + idx).to(tl.float32)
+    mid = tl.where(offset < MID_SIZE, mid, float("inf"))
     out = tl.min(mid)
     tl.store(Out, out)
 
@@ -246,13 +261,17 @@ def l0_norm_kernel(X, Out, M, N, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
 def l0_norm_kernel_1(
     X, Mid, M, BLOCK_SIZE: tl.constexpr, buffer_size_limit: tl.constexpr
 ):
+    # XPU masked-load hazard: on tail blocks the mask is mis-applied at
+    # 1024-lane granularity and real elements get duplicated into the
+    # reduction (deterministic +9216 count at (200,40999,3), heap-content
+    # independent). Avoid masked loads entirely: clamp indices in-bounds
+    # and select the contribution with tl.where afterwards.
     pid = ext.program_id(0).to(tl.int64)
     offset = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    X = X + offset
+    idx = tl.minimum(offset, (M - 1).to(tl.int64))
     Mid = Mid + pid
-    mask = offset < M
-
-    x = tl.load(X, mask=mask, other=0.0).to(tl.float32)
+    x = tl.load(X + idx).to(tl.float32)
+    x = tl.where(offset < M, x, 0.0)
     cnt = (x != 0).to(tl.float32)
     mid = tl.sum(cnt)
     tl.store(Mid, mid)
@@ -263,10 +282,11 @@ def l0_norm_kernel_1(
 def l0_norm_kernel_2(
     Mid, Out, MID_SIZE, BLOCK_MID: tl.constexpr, buffer_size_limit: tl.constexpr
 ):
+    # See the kernel_1 note: no masked loads; clamp + tl.where.
     offset = tl.arange(0, BLOCK_MID)
-    Mid = Mid + offset
-    mask = offset < MID_SIZE
-    mid = tl.load(Mid, mask=mask, other=0.0).to(tl.float32)
+    idx = tl.minimum(offset, (MID_SIZE - 1).to(tl.int64))
+    mid = tl.load(Mid + idx).to(tl.float32)
+    mid = tl.where(offset < MID_SIZE, mid, 0.0)
     out = tl.sum(mid)
     tl.store(Out, out)
 
@@ -305,14 +325,18 @@ def v_norm_kernel(X, Out, M, N, ord, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexp
 def l1_norm_kernel_1(
     X, Mid, ord, M, BLOCK_SIZE: tl.constexpr, buffer_size_limit: tl.constexpr
 ):
-    ord = ord.to(tl.float32)
+    # XPU masked-load hazard: on tail blocks the mask is mis-applied at
+    # 1024-lane granularity and real elements get duplicated into the
+    # reduction (deterministic +9216 count at (200,40999,3), heap-content
+    # independent). Avoid masked loads entirely: clamp indices in-bounds
+    # and select the contribution with tl.where afterwards.
     pid = ext.program_id(0).to(tl.int64)
     offset = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    X = X + offset
+    idx = tl.minimum(offset, (M - 1).to(tl.int64))
     Mid = Mid + pid
-    mask = offset < M
-
-    x = tl.load(X, mask=mask, other=0.0).to(tl.float32)
+    x = tl.load(X + idx).to(tl.float32)
+    ord = ord.to(tl.float32)
+    x = tl.where(offset < M, x, 0.0)
     mid = tl.sum(pow(tl.abs(x), ord))
     tl.store(Mid, mid)
 
@@ -322,12 +346,13 @@ def l1_norm_kernel_1(
 def l1_norm_kernel_2(
     Mid, Out, ord, MID_SIZE, BLOCK_MID: tl.constexpr, buffer_size_limit: tl.constexpr
 ):
-    ord = ord.to(tl.float32)
+    # See the kernel_1 note: no masked loads; clamp + tl.where.
     offset = tl.arange(0, BLOCK_MID)
-    Mid = Mid + offset
-    mask = offset < MID_SIZE
-    mid = tl.load(Mid, mask=mask, other=0.0).to(tl.float32)
-    out = pow(tl.sum(mid), 1 / ord)
+    idx = tl.minimum(offset, (MID_SIZE - 1).to(tl.int64))
+    mid = tl.load(Mid + idx).to(tl.float32)
+    ord = ord.to(tl.float32)
+    mid = tl.where(offset < MID_SIZE, mid, 0.0)
+    out = pow(tl.abs(tl.sum(mid)), 1 / ord)
     tl.store(Out, out)
 
 
@@ -354,9 +379,17 @@ def vector_norm(x, ord=2, dim=None, keepdim=False, dtype=None):
             # M <= 2**30 so stage-2's tl.sum(mid) is also within the safe range.
             # The old cap int(1024*64/element_size) gave 16384 for fp32 -> for
             # M=2**30 MID_SIZE=65536 which broke stage-2 (wrong fp32 results).
+            # XPU tile hazard (probed 2026-08-26): 32768-lane tiles are
+            # corrupted in two independent ways -- masked loads duplicate
+            # real elements into tail lanes (deterministic +9216 count at
+            # (200,40999,3)), and tl.sum silently drops ~75% of lanes --
+            # while 1024/8192-lane tiles are exact with the clamp+where
+            # kernels above. Cap at 8192. NOTE this bounds stage-2 safety
+            # to MID_SIZE lanes <= ~16k (M <= ~1.3e8); beyond that a third
+            # reduction stage would be needed.
             BLOCK_SIZE = min(
                 triton.next_power_of_2(triton.cdiv(M, cluster_num)),
-                32768,
+                8192,
             )
             MID_SIZE = triton.cdiv(M, BLOCK_SIZE)
             BLOCK_MID = triton.next_power_of_2(MID_SIZE)
