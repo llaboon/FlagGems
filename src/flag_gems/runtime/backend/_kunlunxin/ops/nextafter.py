@@ -85,11 +85,11 @@ def nextafter_func(input, other):
         return r16.to(input.dtype, bitcast=True)
     elif tl.constexpr(dtype == tl.float64):
         # float64: same algorithm on the int64 bit pattern.
-        exp_mask = 9218868437227405312   # 0x7FF0000000000000
-        frac_mask = 4503599627370495     # 0x000FFFFFFFFFFFFF
+        exp_mask = 9218868437227405312  # 0x7FF0000000000000
+        frac_mask = 4503599627370495  # 0x000FFFFFFFFFFFFF
         sign_bit = -9223372036854775808  # 0x8000000000000000 (INT64_MIN)
         cross_const = -9223372036854775807  # 0x8000000000000001
-        zero_minus = -9223372036854775808   # 0x8000000000000000
+        zero_minus = -9223372036854775808  # 0x8000000000000000
 
         x_int = input.to(tl.int64, bitcast=True)
         y_int = other.to(tl.int64, bitcast=True)
@@ -130,11 +130,11 @@ def nextafter_func(input, other):
         return r.to(input.dtype, bitcast=True)
     else:
         # float32: same algorithm on the int32 bit pattern (two's complement).
-        exp_mask = 2139095040          # 0x7F800000
-        frac_mask = 8388607            # 0x007FFFFF
-        sign_bit = -2147483648         # 0x80000000 (INT_MIN)
-        cross_const = -2147483647      # 0x80000001
-        zero_minus = -2147483648       # 0x80000000
+        exp_mask = 2139095040  # 0x7F800000
+        frac_mask = 8388607  # 0x007FFFFF
+        sign_bit = -2147483648  # 0x80000000 (INT_MIN)
+        cross_const = -2147483647  # 0x80000001
+        zero_minus = -2147483648  # 0x80000000
 
         x_int = input.to(tl.int32, bitcast=True)
         y_int = other.to(tl.int32, bitcast=True)
@@ -174,7 +174,6 @@ def nextafter_func(input, other):
             ),
         )
         return r.to(input.dtype, bitcast=True)
-
 
 
 @pointwise_dynamic(is_tensor=[True, True], promotion_methods=[(0, 1, "DEFAULT")])
@@ -241,9 +240,7 @@ def nextafter(input, other, *, out=None):
                 input.view(torch.float16), oth, out0=out.view(torch.float16)
             )
             return out
-        return nextafter_func_bf16(
-            input.view(torch.float16), oth
-        ).view(torch.bfloat16)
+        return nextafter_func_bf16(input.view(torch.float16), oth).view(torch.bfloat16)
     if out is not None:
         return nextafter_func(input, other, out0=out)
     return nextafter_func(input, other)
@@ -253,7 +250,8 @@ def nextafter_(input, other):
     logger.debug("GEMS_KUNLUNXIN NEXTAFTER_")
     if input.dtype == torch.bfloat16:
         nextafter_func_bf16(
-            input.view(torch.float16), other.view(torch.float16),
+            input.view(torch.float16),
+            other.view(torch.float16),
             out0=input.view(torch.float16),
         )
         return input
