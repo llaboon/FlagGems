@@ -293,6 +293,8 @@ from .special_logsumexp import special_logsumexp
 from .sqrt import sqrt, sqrt_
 from .stack import stack
 from .std import std
+from .var import var, var_correction, var_dim
+from .norm import norm, norm_scalar, norm_scalaropt_dim
 from .sub import sub, sub_, subtract_
 from .sum import sum, sum_dim, sum_dim_out, sum_out
 from .t_copy import t_copy, t_copy_out
@@ -781,4 +783,11 @@ __all__ = [
     "zero_out",
     "zeros",
     "zeros_like",
+
+    "var",
+    "var_correction",
+    "var_dim",
+    "norm",
+    "norm_scalar",
+    "norm_scalaropt_dim",
 ]
