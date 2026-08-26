@@ -319,6 +319,7 @@ from .upsample_nearest_exact1d_backward import (
     _upsample_nearest_exact1d_backward,
     _upsample_nearest_exact1d_backward_grad_input,
 )
+from .upsample_nearest_exact2d_backward import _upsample_nearest_exact2d_backward
 from .upsample_trilinear3d import upsample_trilinear3d
 from .var_mean import var_mean
 from .vdot import vdot
@@ -360,6 +361,7 @@ __all__ = [
     "_upsample_bilinear2d_aa",
     "_upsample_nearest_exact1d_backward",
     "_upsample_nearest_exact1d_backward_grad_input",
+    "_upsample_nearest_exact2d_backward",
     "apply_repetition_penalties",
     "abs",
     "abs_",
