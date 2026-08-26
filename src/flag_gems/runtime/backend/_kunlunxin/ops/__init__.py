@@ -309,6 +309,8 @@ from .trunc import trunc, trunc_
 from .uniform import uniform_
 from .unique import _unique2
 from .upsample_bicubic2d_aa import _upsample_bicubic2d_aa
+from .upsample_bilinear2d import upsample_bilinear2d
+from .upsample_bilinear2d_aa import _upsample_bilinear2d_aa
 from .upsample_linear1d import upsample_linear1d
 from .upsample_nearest1d import upsample_nearest1d
 from .upsample_nearest2d import upsample_nearest2d
@@ -350,6 +352,7 @@ __all__ = [
     "softshrink_out",
     "_unique2",
     "_upsample_bicubic2d_aa",
+    "_upsample_bilinear2d_aa",
     "apply_repetition_penalties",
     "abs",
     "abs_",
@@ -755,6 +758,7 @@ __all__ = [
     "trunc_",
     "true_divide_",
     "uniform_",
+    "upsample_bilinear2d",
     "upsample_linear1d",
     "upsample_nearest1d",
     "upsample_nearest2d",
