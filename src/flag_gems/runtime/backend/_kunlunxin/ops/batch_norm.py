@@ -480,10 +480,14 @@ def batch_norm_backward(
     grads = []
     if output_mask[0]:
         if train:
-            gi = inv_std.view(1, c, 1) * w.view(1, c, 1) * (
-                dy
-                - sum_dy.view(1, c, 1) / count
-                - xhat * sum_dy_xhat.view(1, c, 1) / count
+            gi = (
+                inv_std.view(1, c, 1)
+                * w.view(1, c, 1)
+                * (
+                    dy
+                    - sum_dy.view(1, c, 1) / count
+                    - xhat * sum_dy_xhat.view(1, c, 1) / count
+                )
             )
         else:
             # eval: running stats are constants, no centering correction
@@ -503,3 +507,307 @@ def batch_norm_backward(
     else:
         grads.append(None)
     return tuple(grads)
+
+
+# ---------------------------------------------------------------------------
+# _batch_norm_impl_index family (aten::batch_norm_impl_index and variants)
+# ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
+
+
+def batch_norm_impl_index(
+    input: Tensor,
+    weight=None,
+    bias=None,
+    running_mean=None,
+    running_var=None,
+    training=False,
+    momentum=0.1,
+    eps=1e-05,
+    cudnn_enabled=True,
+):
+    # aten::batch_norm (functional) is a CompositeImplicitAutograd op that
+    # internally redispatches to aten::_batch_norm_impl_index, so every
+    # batch_norm-family entry point (F.batch_norm, native_batch_norm_legit,
+    # instance_norm, ...) funnels here. The generic impl_index kernel's 2-D
+    # strided pointer arithmetic fails XPU tt.addptr verification ("result
+    # type matches ptr type", _batch_norm_impl_index.py:172) and surfaces as
+    # OutOfResources/uni_sram on both training and eval paths. Delegate to
+    # the kunlunxin 3-stage batch_norm implementation instead.
+    logger.debug("GEMS_KUNLUNXIN BATCH_NORM_IMPL_INDEX")
+    output, save_mean, save_invstd = batch_norm(
+        input,
+        weight,
+        bias,
+        running_mean,
+        running_var,
+        training,
+        momentum,
+        eps,
+    )
+    reserve = torch.empty((0,), dtype=torch.uint8, device=input.device)
+    return output.view_as(input), save_mean, save_invstd, reserve, 0
+
+
+def batch_norm_impl_index_backward(
+    impl_index,
+    input,
+    grad_out,
+    weight=None,
+    running_mean=None,
+    running_var=None,
+    save_mean=None,
+    save_var=None,
+    train=False,
+    eps=1e-05,
+    output_mask=None,
+    reservedSpace=None,
+):
+    # aten::_batch_norm_impl_index_backward(int impl_index, Tensor input,
+    # Tensor grad_output, ... bool[3] output_mask, Tensor reservedSpace):
+    # impl_index comes FIRST; keep the formal order in schema order.
+    logger.debug("GEMS_KUNLUNXIN BATCH_NORM_IMPL_INDEX_BACKWARD")
+    if output_mask is None:
+        output_mask = [True, True, True]
+    return batch_norm_backward(
+        grad_out,
+        input,
+        weight,
+        running_mean,
+        running_var,
+        save_mean,
+        save_var,  # PyTorch's save_var is in fact inv_std
+        train,
+        eps,
+        output_mask,
+    )
+
+
+def batch_norm_no_update(
+    input,
+    weight=None,
+    bias=None,
+    running_mean=None,
+    running_var=None,
+    momentum=0.1,
+    eps=1e-05,
+):
+    # aten::_batch_norm_no_update(Tensor input, Tensor? weight, Tensor? bias,
+    # Tensor? running_mean, Tensor? running_var, float momentum, float eps)
+    # -> (Tensor, Tensor, Tensor, Tensor). Eval-only: normalize with the
+    # running stats, never update them. CPU returns empty fp32 save tensors
+    # and an empty uint8 reserve; the generic kernel trips the XPU compiler
+    # (RuntimeError: PassManager::run failed) on every shape.
+    logger.debug("GEMS_KUNLUNXIN BATCH_NORM_NO_UPDATE")
+    output, _, _ = batch_norm(
+        input, weight, bias, running_mean, running_var, False, momentum, eps
+    )
+    empty_f32 = torch.empty((0,), dtype=torch.float32, device=input.device)
+    empty_u8 = torch.empty((0,), dtype=torch.uint8, device=input.device)
+    return output.view_as(input), empty_f32, empty_f32, empty_u8
+
+
+def batch_norm_with_update_functional(
+    input,
+    weight=None,
+    bias=None,
+    running_mean=None,
+    running_var=None,
+    momentum=0.1,
+    eps=1e-05,
+):
+    # aten::_batch_norm_with_update_functional is called directly by
+    # torch.ops.aten; the generic kernel shares the impl_index addptr
+    # failure. Delegate to the kunlunxin 3-stage path, whose training
+    # branch folds the running-stat updates in place (combine kernel),
+    # so the mutated running_mean/running_var tensors are the new stats.
+    logger.debug("GEMS_KUNLUNXIN BATCH_NORM_WITH_UPDATE_FUNCTIONAL")
+    output, save_mean, save_invstd = batch_norm(
+        input,
+        weight,
+        bias,
+        running_mean,
+        running_var,
+        True,
+        momentum,
+        eps,
+    )
+    # aten schema returns SIX tensors: (output, save_mean, save_var,
+    # reserve, running_mean_out, running_var_out).
+    reserve = torch.empty((0,), dtype=torch.uint8, device=input.device)
+    return (
+        output.view_as(input),
+        save_mean,
+        save_invstd,
+        reserve,
+        running_mean,
+        running_var,
+    )
+
+
+def miopen_batch_norm_backward(
+    input,
+    grad_output,
+    weight,
+    running_mean,
+    running_var,
+    save_mean,
+    save_var,
+    epsilon,
+):
+    # aten::miopen_batch_norm_backward mirrors the cudnn variant. Its
+    # save_var argument holds the saved inverse standard deviation (rstd),
+    # which is exactly what batch_norm_backward expects as save_invstd.
+    logger.debug("GEMS_KUNLUNXIN MIOPEN_BATCH_NORM_BACKWARD")
+    input_grad, weight_grad, bias_grad = batch_norm_backward(
+        grad_output,
+        input,
+        weight,
+        running_mean,
+        running_var,
+        save_mean,
+        save_var,
+        True,
+        epsilon,
+        [True, True, True],
+    )
+    return input_grad, weight_grad, bias_grad
+
+
+# ---------------------------------------------------------------------------
+# _native_batch_norm_legit family
+# ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
+
+
+def _native_batch_norm_legit(
+    input: Tensor,
+    weight,
+    bias,
+    running_mean: Tensor,
+    running_var: Tensor,
+    training: bool,
+    momentum: float,
+    eps: float,
+):
+    # aten::_native_batch_norm_legit mutates running stats in place and
+    # returns (output, save_mean, save_invstd). The kunlunxin batch_norm
+    # training branch folds the running-stat update into the combine
+    # kernel, so the in-place mutation is covered.
+    logger.debug("GEMS_KUNLUNXIN NATIVE_BATCH_NORM_LEGIT")
+    output, save_mean, save_invstd = batch_norm(
+        input, weight, bias, running_mean, running_var, training, momentum, eps
+    )
+    if not training:
+        # aten CPU returns EMPTY save tensors in eval mode.
+        empty = torch.empty(0, dtype=torch.float32, device=input.device)
+        return output, empty, empty
+    return output, save_mean, save_invstd
+
+
+def _native_batch_norm_legit_no_stats(
+    input: Tensor,
+    weight,
+    bias,
+    training: bool,
+    momentum: float,
+    eps: float,
+):
+    logger.debug("GEMS_KUNLUNXIN NATIVE_BATCH_NORM_LEGIT_NO_STATS")
+    if not training:
+        raise RuntimeError("Expected training to be true, but got false.")
+    channels = input.shape[1]
+    running_mean = torch.zeros(channels, dtype=input.dtype, device=input.device)
+    running_var = torch.ones(channels, dtype=input.dtype, device=input.device)
+    return batch_norm(
+        input, weight, bias, running_mean, running_var, True, momentum, eps
+    )
+
+
+def _copy_outputs(result, out, save_mean, save_invstd):
+    result_out, result_mean, result_invstd = result
+    out.resize_as_(result_out).copy_(result_out)
+    save_mean.resize_as_(result_mean).copy_(result_mean)
+    save_invstd.resize_as_(result_invstd).copy_(result_invstd)
+    return out, save_mean, save_invstd
+
+
+def _native_batch_norm_legit_out(
+    input: Tensor,
+    weight,
+    bias,
+    running_mean: Tensor,
+    running_var: Tensor,
+    training: bool,
+    momentum: float,
+    eps: float,
+    *,
+    out: Tensor,
+    save_mean: Tensor,
+    save_invstd: Tensor,
+):
+    logger.debug("GEMS_KUNLUNXIN NATIVE_BATCH_NORM_LEGIT_OUT")
+    result = _native_batch_norm_legit(
+        input, weight, bias, running_mean, running_var, training, momentum, eps
+    )
+    return _copy_outputs(result, out, save_mean, save_invstd)
+
+
+def _native_batch_norm_legit_no_stats_out(
+    input: Tensor,
+    weight,
+    bias,
+    training: bool,
+    momentum: float,
+    eps: float,
+    *,
+    out: Tensor,
+    save_mean: Tensor,
+    save_invstd: Tensor,
+):
+    logger.debug("GEMS_KUNLUNXIN NATIVE_BATCH_NORM_LEGIT_NO_STATS_OUT")
+    result = _native_batch_norm_legit_no_stats(
+        input, weight, bias, training, momentum, eps
+    )
+    return _copy_outputs(result, out, save_mean, save_invstd)
+
+
+def _native_batch_norm_legit_functional(
+    input: Tensor,
+    weight,
+    bias,
+    running_mean: Tensor,
+    running_var: Tensor,
+    training: bool,
+    momentum: float,
+    eps: float,
+):
+    # Functional variant: the caller's running stats must NOT be mutated;
+    # updated stats are returned as new tensors. Clone before delegating
+    # so the in-place update inside batch_norm lands on the clones.
+    logger.debug("GEMS_KUNLUNXIN NATIVE_BATCH_NORM_LEGIT_FUNCTIONAL")
+    rm = running_mean.clone()
+    rv = running_var.clone()
+    output, save_mean, save_invstd = batch_norm(
+        input, weight, bias, rm, rv, training, momentum, eps
+    )
+    return output, save_mean, save_invstd, rm, rv
+
+
+def _native_batch_norm_legit_no_training(
+    input: Tensor,
+    weight,
+    bias,
+    running_mean: Tensor,
+    running_var: Tensor,
+    momentum: float,
+    eps: float,
+):
+    # Eval-only variant: normalize with the running stats, no update.
+    logger.debug("GEMS_KUNLUNXIN NATIVE_BATCH_NORM_LEGIT_NO_TRAINING")
+    output, save_mean, save_invstd = batch_norm(
+        input, weight, bias, running_mean, running_var, False, momentum, eps
+    )
+    return output, save_mean, save_invstd
