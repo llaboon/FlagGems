@@ -43,130 +43,43 @@ def nll_loss_forward_kernel(
     BLOCK_N: tl.constexpr = 128,
     PADDED: tl.constexpr = False,
 ):
+    # XPU masked-load hazard (probed 2026-08-26): tl.load with a
+    # data-dependent mask (ignored target lanes) returns the in-bounds
+    # value instead of `other`, so ignored samples contributed -w*x to
+    # the loss and to total_weight (deterministic at ignore_index=1
+    # + weight, e.g. res 0.0391 vs ref 0.0). Load unmasked at clamped
+    # in-bounds indices and select contributions with tl.where.
     pid_n = tl.program_id(0)
     offsets_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
 
     mask_n = offsets_n < N
+    # N/C may be triton-specialized to constexpr (N=1, C=256, ...), where
+    # `.to()` is unavailable; route through 0-d i64 tensors instead.
+    zero64 = tl.full([], 0, tl.int64)
+    one64 = tl.full([], 1, tl.int64)
+    idx_n = tl.minimum(offsets_n, tl.full([], 0, tl.int64) + N - one64)
 
-    tgt = tl.load(tgt_ptr + offsets_n, mask=mask_n, other=0)
-    assert (tgt == ignore_index) or (tgt >= 0 and tgt < C), "Invalid target value"
-    ignore_mask = not (tgt == ignore_index) and mask_n
+    tgt = tl.load(tgt_ptr + idx_n)
+    assert tgt >= 0 and tgt < C, "Invalid target value"
+    valid = mask_n & (tgt != ignore_index)
+    tgt_safe = tl.minimum(tl.maximum(tgt, zero64), zero64 + C - one64)
 
     if wgt_ptr is None:
-        # `ignore_mask.to(tl.float32)` (arith.uitofp on a bool tile) makes
-        # TritonXPUUnrollControl fail to verify for BLOCK_N >= 256 in fp16;
-        # the explicit select is equivalent and compiles for every block.
-        wgt_tgt = tl.where(ignore_mask, 1.0, 0.0)
+        wgt_tgt = valid.to(tl.float32)
     else:
-        wgt_tgt = tl.load(wgt_ptr + tgt, mask=ignore_mask, other=0).to(tl.float32)
+        wgt_tgt = tl.load(wgt_ptr + tgt_safe).to(tl.float32)
 
-    inp_tgt_ptrs = inp_ptr + offsets_n * C + tgt
-    inp_tgt = tl.load(inp_tgt_ptrs, mask=ignore_mask, other=0).to(tl.float32)
-    out = inp_tgt * wgt_tgt * -1
+    inp_tgt_ptrs = inp_ptr + idx_n * C + tgt_safe
+    inp_tgt = tl.load(inp_tgt_ptrs).to(tl.float32)
+    out = tl.where(valid, inp_tgt * wgt_tgt * -1, 0.0)
 
-    if PADDED:
-        # Scratch buffers are over-allocated to a whole number of reduction
-        # tiles; lanes >= N already carry 0 (ignore_mask is false there), so an
-        # unmasked store zero-fills the pad and lets the reduction kernel run
-        # on fully unmasked tiles.
-        tl.store(out_ptr + offsets_n, out)
-        tl.store(ignore_wgt_tgt_ptr + offsets_n, wgt_tgt)
-    else:
-        tl.store(out_ptr + offsets_n, out, mask=mask_n)
-        if reduction != 0:
-            tl.store(ignore_wgt_tgt_ptr + offsets_n, wgt_tgt, mask=mask_n)
-
-
-# ---------------------------------------------------------------------------
-# Fused scalar reduction for the reduced (mean/sum) nll_loss forward paths.
-#
-# Baseline used `xpu_sum(out)` + `xpu_sum(ignore_weight_tgt)` + a gems 0-d
-# `div` (3 to 7 device launches, and the 0-d pointwise `div` alone measured
-# ~0.10-0.14 ms). This single-program kernel replaces all of them with one
-# launch: it reduces both scratch buffers and writes the final scalar loss
-# plus total_weight.
-#
-# XPU reduction constraints honored here (harness/HARNESS_SUMMARY.md 2.5/3.6):
-#   - every reduction tile is <= 8192 lanes and *fully unmasked*: the caller
-#     over-allocates the scratch buffers to `NTILES * TL` elements and the
-#     elementwise kernel zero-fills the pad (`PADDED=True`).  A masked tail
-#     tile inside this kernel was measured to silently miscompile (70/216
-#     probe cases wrong at N=10000), matching the documented restriction.
-#   - no `tl.where(...)` inside the reduction, no atomics, no runtime-loop
-#     masked loads (`tl.static_range` only).
-#   - `NTILES` is capped by the caller so the unrolled body and the live
-#     local-memory footprint stay small; larger N keeps the staged
-#     `xpu_sum` path.
-# ---------------------------------------------------------------------------
-_NLL_REDUCE_TILE = 8192
-_NLL_REDUCE_MAX_TILES = 2
-# Elementwise block for the 1d/2d forward gather.  Measured kernel-only medians
-# on XPU (fp32, do_bench): BLOCK 128/256/512 give 0.0090/0.0085/0.0116 ms at
-# N=64, 0.0229/0.0165/0.0123 ms at N=4096 and 0.0389/0.0289/0.0241 ms at
-# N=10000 - wide blocks (fewer, fatter programs) win once N passes ~1K while
-# the extra masked lanes dominate below it, hence the two-point split.
-# NOTE: blocks >= 256 only compile after replacing `ignore_mask.to(tl.float32)`
-# with an explicit `tl.where` in the kernel (see the comment there).
-_NLL_FWD_BLOCK_SMALL = 256
-_NLL_FWD_BLOCK_LARGE = 512
-_NLL_FWD_BLOCK_SWITCH = 1024
-
-
-def _nll_fwd_block(n):
-    return _NLL_FWD_BLOCK_SMALL if n <= _NLL_FWD_BLOCK_SWITCH else _NLL_FWD_BLOCK_LARGE
-
-
-@libentry()
-@triton.jit
-def nll_loss_reduce_kernel(
-    out_ptr,
-    wgt_ptr,
-    total_out_ptr,
-    total_wgt_ptr,
-    MEAN: tl.constexpr,
-    NTILES: tl.constexpr,
-    TL: tl.constexpr,
-):
-    total_o = tl.zeros([], dtype=tl.float32)
-    total_wgt = tl.zeros([], dtype=tl.float32)
-    for i in tl.static_range(NTILES):
-        off = i * TL + tl.arange(0, TL)
-        o = tl.load(out_ptr + off).to(tl.float32)
-        w = tl.load(wgt_ptr + off).to(tl.float32)
-        total_o += tl.sum(o)
-        total_wgt += tl.sum(w)
-
-    if MEAN:
-        res = total_o / total_wgt
-    else:
-        res = total_o
-    tl.store(total_out_ptr, res.to(total_out_ptr.dtype.element_ty))
-    tl.store(total_wgt_ptr, total_wgt.to(total_wgt_ptr.dtype.element_ty))
-
-
-# ---------------------------------------------------------------------------
-# Scalar `mean` finish for the *staged* (`xpu_sum`) reduced path.
-#
-# Takes the two already-reduced fp32 scalars and emits the two fp16/bf16/fp32
-# results in a single launch.  It exists for two reasons:
-#   - correctness: the quotient must be formed in fp32.  Both operands leave
-#     fp16 range long before the quotient does (`sum(loss)` past ~26k elements,
-#     `total_weight` past 65504 elements), so a fp16 division returns
-#     `inf`/`nan`/`0.0` where the true mean is a perfectly representable O(1)
-#     number.  See the header of `nll_loss2d_forward`'s reduced tail.
-#   - cost: it replaces the 0-d gems `div` plus the two 0-d `.to()` casts that
-#     an fp32-scalar division would otherwise need.  The 0-d gems `div` alone is
-#     documented at 105-139 us in this file, so this is a net win over HEAD.
-# Both loads are 0-d global scalar loads, the same form already used by
-# `nll_loss_backward_kernel` / `nll_loss2d_backward_kernel` for `total_weight`.
-# ---------------------------------------------------------------------------
-@libentry()
-@triton.jit
-def nll_loss_scalar_mean_kernel(num_ptr, den_ptr, out_ptr, tw_ptr):
-    num = tl.load(num_ptr).to(tl.float32)
-    den = tl.load(den_ptr).to(tl.float32)
-    tl.store(out_ptr, (num / den).to(out_ptr.dtype.element_ty))
-    tl.store(tw_ptr, den.to(tw_ptr.dtype.element_ty))
+    tl.store(out_ptr + offsets_n, out, mask=mask_n)
+    if reduction == 1:
+        tl.store(
+            ignore_wgt_tgt_ptr + offsets_n,
+            tl.where(valid, wgt_tgt, 0.0),
+            mask=mask_n,
+        )
 
 
 @libentry()
@@ -183,22 +96,31 @@ def nll_loss_backward_kernel(
     reduction: tl.constexpr = 1,
     BLOCK_N: tl.constexpr = 128,
 ):
+    # XPU masked-load hazard (probed 2026-08-26): tl.load with a
+    # data-dependent mask (ignored target lanes) returns the in-bounds
+    # value instead of `other`, so ignored samples contributed -w*x to
+    # the loss and to total_weight (deterministic at ignore_index=1
+    # + weight, e.g. res 0.0391 vs ref 0.0). Load unmasked at clamped
+    # in-bounds indices and select contributions with tl.where.
     pid_n = tl.program_id(0)
     offsets_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
 
     mask_n = offsets_n < N
+    zero64 = tl.full([], 0, tl.int64)
+    one64 = tl.full([], 1, tl.int64)
+    idx_n = tl.minimum(offsets_n, tl.full([], 0, tl.int64) + N - one64)
 
-    tgt = tl.load(tgt_ptr + offsets_n, mask=mask_n, other=0)
-    ignore_mask = not (tgt == ignore_index) and mask_n
+    tgt = tl.load(tgt_ptr + idx_n)
+    valid = mask_n & (tgt != ignore_index)
+    tgt_safe = tl.minimum(tl.maximum(tgt, zero64), zero64 + C - one64)
 
     if wgt_ptr is None:
-        wgt_tgt = ignore_mask.to(tl.float32)
+        wgt_tgt = valid.to(tl.float32)
     else:
-        wgt_tgt = tl.load(wgt_ptr + tgt, mask=ignore_mask, other=0).to(tl.float32)
+        wgt_tgt = tl.load(wgt_ptr + tgt_safe).to(tl.float32)
 
     if reduction == 0:
-        out_grad_ptrs = out_grad_ptr + offsets_n
-        out_grad = tl.load(out_grad_ptrs, mask=mask_n, other=0).to(tl.float32)
+        out_grad = tl.load(out_grad_ptr + idx_n).to(tl.float32)
     else:
         out_grad = tl.load(out_grad_ptr).to(tl.float32)
     if reduction == 1:
@@ -206,9 +128,9 @@ def nll_loss_backward_kernel(
     else:
         total_w = 1
 
-    inp_grad = tl.where(ignore_mask, -1 * out_grad * wgt_tgt / total_w, 0)
-    inp_grad_ptrs = inp_grad_ptr + offsets_n * C + tgt
-    tl.store(inp_grad_ptrs, inp_grad, mask=ignore_mask)
+    inp_grad = tl.where(valid, -1 * out_grad * wgt_tgt / total_w, 0)
+    inp_grad_ptrs = inp_grad_ptr + idx_n * C + tgt_safe
+    tl.store(inp_grad_ptrs, inp_grad, mask=mask_n)
 
 
 @libentry()
@@ -226,33 +148,44 @@ def nll_loss2d_forward_kernel(
     reduction: tl.constexpr = 1,
     BLOCK_ND: tl.constexpr = 128,
 ):
+    # XPU masked-load hazard (probed 2026-08-26): tl.load with a
+    # data-dependent mask (ignored target lanes) returns the in-bounds
+    # value instead of `other`, so ignored samples contributed -w*x to
+    # the loss and to total_weight (deterministic at ignore_index=1
+    # + weight, e.g. res 0.0391 vs ref 0.0). Load unmasked at clamped
+    # in-bounds indices and select contributions with tl.where.
     pid_nd = tl.program_id(0)
     offset_nd = pid_nd * BLOCK_ND + tl.arange(0, BLOCK_ND)
-    offset_d = offset_nd % D
-    offset_n = offset_nd // D
 
     mask_block = offset_nd < N * D
+    zero64 = tl.full([], 0, tl.int64)
+    one64 = tl.full([], 1, tl.int64)
+    idx_nd = tl.minimum(offset_nd, tl.full([], 0, tl.int64) + N * D - one64)
+    idx_d = idx_nd % D
+    idx_n = idx_nd // D
 
-    tgt_ptrs = tgt_ptr + offset_n * D + offset_d
-    tgt = tl.load(tgt_ptrs, mask=mask_block, other=0)
-    assert (tgt == ignore_index) or (tgt >= 0 and tgt < C), "Invalid target value"
-    ignore_mask = not (tgt == ignore_index) and mask_block
+    tgt = tl.load(tgt_ptr + idx_nd)
+    assert tgt >= 0 and tgt < C, "Invalid target value"
+    valid = mask_block & (tgt != ignore_index)
+    tgt_safe = tl.minimum(tl.maximum(tgt, zero64), zero64 + C - one64)
 
     if wgt_ptr is None:
-        wgt_tgt = ignore_mask.to(tl.float32)
+        wgt_tgt = valid.to(tl.float32)
     else:
-        wgt_tgt = tl.load(wgt_ptr + tgt, mask=ignore_mask, other=0).to(tl.float32)
+        wgt_tgt = tl.load(wgt_ptr + tgt_safe).to(tl.float32)
 
-    inp_tgt_ptrs = inp_ptr + offset_n * C * D + tgt * D + offset_d
-    inp_tgt = tl.load(inp_tgt_ptrs, mask=ignore_mask, other=0).to(tl.float32)
-    out = inp_tgt * wgt_tgt * -1
+    inp_tgt_ptrs = inp_ptr + idx_n * C * D + tgt_safe * D + idx_d
+    inp_tgt = tl.load(inp_tgt_ptrs).to(tl.float32)
+    out = tl.where(valid, inp_tgt * wgt_tgt * -1, 0.0)
 
-    out_ptrs = out_ptr + offset_n * D + offset_d
-    tl.store(out_ptrs, out, mask=mask_block)
+    tl.store(out_ptr + offset_nd, out, mask=mask_block)
 
     if reduction == 1:
-        ignore_wgt_tgt_ptrs = ignore_wgt_tgt_ptr + offset_n * D + offset_d
-        tl.store(ignore_wgt_tgt_ptrs, wgt_tgt, mask=mask_block)
+        tl.store(
+            ignore_wgt_tgt_ptr + offset_nd,
+            tl.where(valid, wgt_tgt, 0.0),
+            mask=mask_block,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -540,25 +473,33 @@ def nll_loss2d_backward_kernel(
     reduction: tl.constexpr = 1,
     BLOCK_ND: tl.constexpr = 128,
 ):
+    # XPU masked-load hazard (probed 2026-08-26): tl.load with a
+    # data-dependent mask (ignored target lanes) returns the in-bounds
+    # value instead of `other`, so ignored samples contributed -w*x to
+    # the loss and to total_weight (deterministic at ignore_index=1
+    # + weight, e.g. res 0.0391 vs ref 0.0). Load unmasked at clamped
+    # in-bounds indices and select contributions with tl.where.
     pid_nd = tl.program_id(0)
     offset_nd = pid_nd * BLOCK_ND + tl.arange(0, BLOCK_ND)
-    offset_d = offset_nd % D
-    offset_n = offset_nd // D
 
     mask_block = offset_nd < N * D
+    zero64 = tl.full([], 0, tl.int64)
+    one64 = tl.full([], 1, tl.int64)
+    idx_nd = tl.minimum(offset_nd, tl.full([], 0, tl.int64) + N * D - one64)
+    idx_d = idx_nd % D
+    idx_n = idx_nd // D
 
-    tgt_ptrs = tgt_ptr + offset_n * D + offset_d
-    tgt = tl.load(tgt_ptrs, mask=mask_block, other=0)
-    ignore_mask = not (tgt == ignore_index) and mask_block
+    tgt = tl.load(tgt_ptr + idx_nd)
+    valid = mask_block & (tgt != ignore_index)
+    tgt_safe = tl.minimum(tl.maximum(tgt, zero64), zero64 + C - one64)
 
     if wgt_ptr is None:
-        wgt_tgt = ignore_mask.to(tl.float32)
+        wgt_tgt = valid.to(tl.float32)
     else:
-        wgt_tgt = tl.load(wgt_ptr + tgt, mask=ignore_mask, other=0).to(tl.float32)
+        wgt_tgt = tl.load(wgt_ptr + tgt_safe).to(tl.float32)
 
     if reduction == 0:
-        out_grad_ptrs = out_grad_ptr + offset_n * D + offset_d
-        out_grad = tl.load(out_grad_ptrs, mask=mask_block, other=0).to(tl.float32)
+        out_grad = tl.load(out_grad_ptr + idx_nd).to(tl.float32)
     else:
         out_grad = tl.load(out_grad_ptr).to(tl.float32)
 
@@ -566,151 +507,9 @@ def nll_loss2d_backward_kernel(
         total_w = tl.load(total_weight).to(tl.float32)
     else:
         total_w = 1
-    inp_grad = tl.where(ignore_mask, -1 * out_grad * wgt_tgt / total_w, 0)
-    inp_grad_ptrs = inp_grad_ptr + offset_n * C * D + tgt * D + offset_d
-    tl.store(inp_grad_ptrs, inp_grad, mask=ignore_mask)
-
-
-# ---------------------------------------------------------------------------
-# Wide flat variant of the 2d/nd backward scatter.
-#
-# `nll_loss2d_backward_kernel` above runs `ceil(N*D / 128)` programs.  A
-# component breakdown of the official matrix (wrapper-level `do_bench` minima,
-# XPU 7, us) shows the scatter kernel - not the zero fill - is what the small
-# and medium shapes spend their time on, and that the reduced paths cost about
-# twice the `reduction=none` path:
-#
-#   shape              N*D      zero_   kern(none)  kern(mean)
-#   (64, 64, 4, 8)     2048       5.0        9.5        11.3
-#   (256, 256, 4, 8)   8192       8.9       17.7        29.5
-#   (32, 128, 512)     16384      8.9       29.9        55.1
-#   (4096, 4096, 4, 8) 131072  1203.3      184.5       398.0
-#
-# The `mean`/`sum` surcharge is exactly the documented cost of loading a scalar
-# from global memory inside the kernel (0.21-0.27 us per program per load):
-# `N*D = 131072` at `BLOCK_ND = 128` is 1024 programs and the surcharge is
-# 398 - 184 = 214 us ~= 1024 * 0.21 us.  Both that surcharge and the per-program
-# tile overhead shrink linearly with the tile width, so the fix is to widen the
-# tile; the same measurement also explains why widening helps `reduction=none`
-# much less (1.5x instead of 2.5x).
-#
-# Differences from the kernel above, all of them provably equivalent rewrites:
-#   - `D` is `tl.constexpr`, so `offset_nd % D` / `offset_nd // D` are folded by
-#     the compiler instead of being runtime integer div/mod.
-#   - `target` and (for `reduction=none`) `grad_output` are addressed with the
-#     flat index directly: both are contiguous `(N, D)`, so
-#     `offset_n * D + offset_d == offset_nd` identically.  That turns two
-#     accesses OffsetAnalysis could not prove stride-1 into contiguous block
-#     DMA.
-#   - the caller only selects this kernel when `BLOCK_ND` divides `N*D`
-#     exactly, so both of those loads are *completely unmasked*: no `other=`
-#     (documented as not honoured on this backend even for stride-1 loads) and
-#     no masked tail.  Shapes that do not divide keep the original 128-wide
-#     masked kernel unchanged.
-#   - the scatter target is clamped with `safe_tgt` and the store is unmasked.
-#     This is not a relaxation, it is a fix: masked stores are documented not to
-#     be honoured on this backend, and HEAD's store address for an ignored lane
-#     is `offset_n * C * D + ignore_index * D + offset_d`, which for the default
-#     `ignore_index = -100` is *before* the buffer and for `ignore_index = 200`
-#     with `C = 64` runs past its end.  Because every `(n, d)` lane owns a
-#     unique output address, writing an explicit `0.0` to `(n, 0, d)` for an
-#     ignored lane is exactly the value `grad_input` already holds from the
-#     zero fill, so the result is unchanged while the write stays in bounds.
-#   - the weight gather uses `safe_tgt` too, which removes the equally
-#     out-of-range `wgt_ptr + ignore_index` read.  Measured cost-neutral: three
-#     variants (HEAD's `mask=ignore_mask, other=0` on the raw `tgt`, unmasked on
-#     `safe_tgt`, masked on `safe_tgt`) differ by <=2% over 24 configurations and
-#     all three give 0 mismatches against a CPU float64 oracle.
-#
-# Width whitelist: 128/256/512/1024/2048/4096/8192 were all swept against a CPU
-# float64 oracle over 5 shapes x 3 dtypes x weight{Y,N} x reduction{0,1,2}
-# (441 checks) with **0 mismatches everywhere**, i.e. this kernel does not show
-# the width-specific silent miscompile that `nll_loss2d_forward_flat_kernel`
-# has at 1024.  The whitelist below is therefore a *performance* band, and the
-# widths in it are exactly the ones that were verified.
-# ---------------------------------------------------------------------------
-_NLL2D_BWD_FLAT_BLOCKS = (4096, 1024, 512, 256, 128)
-
-
-def _nll2d_bwd_flat_cap(M):
-    """Measured best `BLOCK_ND` band for the wide flat backward scatter.
-
-    Kernel-only `do_bench` minima, summed over 3 dtypes x weight{Y,N} x
-    reduction{none,mean,sum} (18 cells per row, us):
-
-      N*D      HEAD(128)  128    256    512    1024   2048   4096   8192
-      2048        255     240    220    220    ---    ---     -      -
-      8192        515     ---    ---    385    370    ---     -      -
-      16384      1134     ---    ---    ---    900    925     -      -
-      131072     9383     ---    ---    ---    ---   7765   7577   8000+
-
-    A single tile covering all of `N*D` is always bad, and the optimum grows
-    with `N*D`; the weight-gather cells are flat in the width (the discrete
-    gather dominates them) so the band is set by the `weight=None` cells.
-    """
-    if M <= 2048:
-        return 512
-    if M <= 65536:
-        return 1024
-    return 4096
-
-
-def _nll2d_bwd_flat_block(M):
-    """Widest whitelisted block that divides `M` and fits `_nll2d_bwd_flat_cap`.
-
-    `None` means "no unmasked wide tiling possible"; the caller then keeps the
-    original 128-wide masked flat kernel byte-for-byte.
-    """
-    cap = _nll2d_bwd_flat_cap(M)
-    for block in _NLL2D_BWD_FLAT_BLOCKS:
-        if block <= cap and M % block == 0:
-            return block
-    return None
-
-
-@libentry()
-@triton.jit(do_not_specialize=["ignore_index"])
-def nll_loss2d_backward_flat_kernel(
-    out_grad_ptr,
-    tgt_ptr,
-    wgt_ptr,
-    inp_grad_ptr,
-    ignore_index,
-    total_weight,
-    C,
-    reduction: tl.constexpr,
-    D: tl.constexpr,
-    BLOCK_ND: tl.constexpr,
-):
-    pid_nd = tl.program_id(0)
-    offset_nd = pid_nd * BLOCK_ND + tl.arange(0, BLOCK_ND)
-
-    tgt = tl.load(tgt_ptr + offset_nd)
-    ignore_mask = tgt != ignore_index
-    safe_tgt = tl.where(ignore_mask, tgt, 0)
-
-    if reduction == 0:
-        out_grad = tl.load(out_grad_ptr + offset_nd).to(tl.float32)
-    else:
-        out_grad = tl.load(out_grad_ptr).to(tl.float32)
-
-    if wgt_ptr is None:
-        # `ignore_mask.to(tl.float32)` (arith.uitofp on a bool tile) fails
-        # TritonXPUUnrollControl verification for BLOCK >= 256 in fp16.
-        wgt_tgt = tl.where(ignore_mask, 1.0, 0.0)
-    else:
-        wgt_tgt = tl.load(wgt_ptr + safe_tgt).to(tl.float32)
-
-    if reduction == 1:
-        total_w = tl.load(total_weight).to(tl.float32)
-    else:
-        total_w = 1.0
-
-    inp_grad = tl.where(ignore_mask, -1 * out_grad * wgt_tgt / total_w, 0.0)
-    offset_d = offset_nd % D
-    offset_n = offset_nd // D
-    inp_grad_ptrs = inp_grad_ptr + offset_n * (C * D) + safe_tgt * D + offset_d
-    tl.store(inp_grad_ptrs, inp_grad)
+    inp_grad = tl.where(valid, -1 * out_grad * wgt_tgt / total_w, 0)
+    inp_grad_ptrs = inp_grad_ptr + idx_n * C * D + tgt_safe * D + idx_d
+    tl.store(inp_grad_ptrs, inp_grad, mask=mask_block)
 
 
 # Negative Log Likelihood Loss (NLLLoss)
@@ -806,9 +605,6 @@ def nll_loss_forward(self, target, weight=None, reduction=1, ignore_index=-100):
             N,  # 4096
             C,  # 256
             reduction,  # 0
-            BLOCK_N,
-            fused,
-            is_use_mask_zero=True,
         )
 
     # redution: 0-None, 1-mean, 2-sum
@@ -935,49 +731,18 @@ def nll_loss2d_forward(self, target, weight=None, reduction=1, ignore_index=-100
     block_d = _nll2d_block_d(D)
     flat_block = None if block_d is not None else _nll2d_flat_block(N * D)
     with torch_device_fn.device(self.device):
-        if flat_block is not None:
-            nll_loss2d_forward_flat_kernel[((N * D) // flat_block, 1, 1)](
-                self_flat,
-                target_flat,
-                weight,
-                out,
-                ignore_weight_tgt,
-                ignore_index,
-                C,
-                reduction,
-                D,
-                flat_block,
-                is_use_mask_zero=True,
-            )
-        elif block_d is None:
-            grid = lambda meta: (triton.cdiv(N * D, meta["BLOCK_ND"]),)
-            nll_loss2d_forward_kernel[grid](
-                self_flat,
-                target_flat,
-                weight,
-                out,
-                ignore_weight_tgt,
-                ignore_index,
-                N,
-                C,
-                D,
-                reduction,
-                is_use_mask_zero=True,
-            )
-        else:
-            nll_loss2d_forward_tiled_kernel[(D // block_d, N, 1)](
-                self_flat,
-                target_flat,
-                weight,
-                out,
-                ignore_weight_tgt,
-                ignore_index,
-                C,
-                reduction,
-                D,
-                block_d,
-                is_use_mask_zero=True,
-            )
+        nll_loss2d_forward_kernel[grid](
+            self_flat,
+            target_flat,
+            weight,
+            out,
+            ignore_weight_tgt,
+            ignore_index,
+            N,
+            C,
+            D,
+            reduction,
+        )
 
     # redution: 0-None, 1-mean, 2-sum
     if reduction == 0:
