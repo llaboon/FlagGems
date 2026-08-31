@@ -45,6 +45,7 @@ from .argmin import argmin
 from .as_strided_copy import as_strided_copy, as_strided_copy_out
 from .asin import asin, asin_
 from .atan import atan, atan_
+from .atanh import atanh, atanh_
 from .attention import (
     ScaleDotProductAttention,
     flash_attention_forward,
@@ -398,6 +399,8 @@ __all__ = [
     "asin_",
     "atan",
     "atan_",
+    "atanh",
+    "atanh_",
     "avg_pool2d",
     "avg_pool2d_backward",
     "baddbmm",
