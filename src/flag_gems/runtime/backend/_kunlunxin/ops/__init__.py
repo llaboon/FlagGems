@@ -286,6 +286,7 @@ from .segment_reduce import (
     segment_reduce,
     segment_reduce_out,
 )
+from .special_erfinv import special_erfinv, special_erfinv_out
 from .selu import selu, selu_
 from .sgn_ import sgn_
 from .sigmoid import sigmoid, sigmoid_, sigmoid_backward
