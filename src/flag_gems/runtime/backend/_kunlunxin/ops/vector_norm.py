@@ -1076,7 +1076,21 @@ def vector_norm(x, ord=2, dim=None, keepdim=False, dtype=None):
                 triton.next_power_of_2(triton.cdiv(M, cluster_num)),
                 32768,
             )
-            MID_SIZE = triton.cdiv(M, BLOCK_SIZE)
+            # The stage-1 kernels always load a full BLOCK_SIZE per program with
+            # mask = offset < M. On XPU a masked tail load is unreliable and can
+            # read out-of-bounds memory into the reduction (HARNESS_SUMMARY 3.5),
+            # which breaks full reductions where M is not a multiple of
+            # BLOCK_SIZE (e.g. 24599400 with BLOCK_SIZE=32768). Zero-pad (or
+            # +inf-pad for min-norm) the compressed input up to a multiple of
+            # BLOCK_SIZE so every stage-1 block is full and no OOB read happens.
+            padded_M = triton.cdiv(M, BLOCK_SIZE) * BLOCK_SIZE
+            if padded_M > M:
+                pad_val = float("inf") if ord == -float("inf") else 0.0
+                xc_pad = torch.full([padded_M], pad_val, dtype=x.dtype, device=x.device)
+                torch.ops.aten._copy_from(x, xc_pad[:M], False)
+                x = xc_pad
+                M = padded_M
+            MID_SIZE = M // BLOCK_SIZE
             BLOCK_MID = triton.next_power_of_2(MID_SIZE)
 
             # Stage-2 reduces a power-of-two tile. Pad and explicitly clear its
