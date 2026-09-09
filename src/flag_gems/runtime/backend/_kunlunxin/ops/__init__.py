@@ -23,6 +23,7 @@ from .abs import abs, abs_
 from .absolute import absolute
 from .acos import acos
 from .add import add, add_
+from .add_relu import _add_relu, _add_relu_
 from .addcdiv import addcdiv, addcdiv_, addcdiv_out
 from .addcmul import addcmul, addcmul_out
 from .addmm import addmm, addmm_out
@@ -348,6 +349,8 @@ __all__ = [
     "acos",
     "add",
     "add_",
+    "add_relu",
+    "add_relu_",
     "addcdiv",
     "addcdiv_",
     "addcdiv_out",
