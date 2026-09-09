@@ -268,6 +268,7 @@ from .igamma_ import igamma_  # noqa: F401
 from .igammac import igammac, igammac_out
 from .igammac_ import igammac_
 from .im2col import im2col
+from .igamma_ import igamma_
 from .index import index
 from .index_add import index_add, index_add_
 from .index_copy_ import index_copy_
@@ -906,6 +907,7 @@ __all__ = [
     "igammac_",
     "igammac_out",
     "im2col",
+    "igamma_",
     "index",
     "index_add",
     "index_add_",
@@ -1001,6 +1003,8 @@ __all__ = [
     "lu_unpack",
     "lu_unpack_out",
     "margin_ranking_loss",
+    "matmul_bf16",
+    "matmul_int8",
     "masked_fill",
     "masked_fill_",
     "masked_scatter",
