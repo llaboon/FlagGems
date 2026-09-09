@@ -314,15 +314,7 @@ from .log2 import log2, log2_
 from .log10 import log10, log10_, log10_out  # noqa: F401
 from .log_ import log_  # noqa: F401
 from .log_sigmoid import log_sigmoid
-from .log_sigmoid_backward import log_sigmoid_backward, log_sigmoid_backward_out
-from .log_sigmoid_forward import log_sigmoid_forward
-from .log_softmax import (
-    log_softmax,
-    log_softmax_backward,
-    log_softmax_backward_out,
-    log_softmax_out,
-)
-from .logaddexp import logaddexp, logaddexp_out
+from .log_softmax import log_softmax, log_softmax_backward, log_softmax_backward_out
 from .logaddexp2 import logaddexp2, logaddexp2_out
 from .logcumsumexp import logcumsumexp, logcumsumexp_out
 from .logical_and import logical_and, logical_and_
@@ -993,8 +985,6 @@ __all__ = [
     "log_softmax",
     "log_softmax_backward",
     "log_softmax_backward_out",
-    "log_softmax_out",
-    "logaddexp",
     "logaddexp2",
     "logaddexp2_out",
     "logaddexp_out",

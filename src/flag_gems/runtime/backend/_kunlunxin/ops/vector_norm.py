@@ -1093,10 +1093,9 @@ def vector_norm(x, ord=2, dim=None, keepdim=False, dtype=None):
             MID_SIZE = M // BLOCK_SIZE
             BLOCK_MID = triton.next_power_of_2(MID_SIZE)
 
-            # Stage-2 reduces a power-of-two tile. Pad and explicitly clear its
-            # workspace so XPU masked loads never consume memory past MID_SIZE.
-            mid = torch.empty([BLOCK_MID], dtype=torch.float32, device=x.device)
-            zero_workspace_kernel[(1,)](mid, BLOCK_MID)
+            # fp32 mid so fp16/bf16 partial sums do not lose precision (the
+            # output is still cast back to the input dtype by kernel_2).
+            mid = torch.empty([MID_SIZE], dtype=torch.float32, device=x.device)
             out = torch.empty(shape, dtype=dtype, device=x.device)
             if ord == 2:
                 l2_norm_kernel_1[(MID_SIZE,)](
