@@ -157,6 +157,7 @@ from .gt import gt, gt_scalar
 from .hadamard_transform import hadamard_transform
 from .hardsigmoid import hardsigmoid, hardsigmoid_out
 from .hstack import hstack
+from .igamma_ import igamma_
 from .index import index
 from .index_add import index_add, index_add_
 from .index_put import index_put, index_put_
@@ -173,6 +174,7 @@ from .leaky_relu import leaky_relu, leaky_relu_, leaky_relu_out
 from .lerp import lerp_scalar, lerp_scalar_, lerp_tensor, lerp_tensor_
 from .less_equal import less_equal, less_equal_scalar
 from .lift_fresh_copy import lift_fresh_copy
+from .linalg_householder_product import linalg_householder_product
 from .linspace import linspace
 from .log import log
 from .log1p import log1p, log1p_
@@ -186,6 +188,7 @@ from .logical_xor import logical_xor, logical_xor_
 from .logspace import logspace
 from .logsumexp import logsumexp
 from .lt import lt, lt_, lt_scalar, lt_scalar_
+from .lu_unpack import lu_unpack, lu_unpack_out
 from .masked_fill import masked_fill, masked_fill_
 from .masked_scatter import masked_scatter, masked_scatter_
 from .masked_select import masked_select
@@ -525,6 +528,7 @@ __all__ = [
     "hardsigmoid",
     "hardsigmoid_out",
     "hstack",
+    "igamma_",
     "index",
     "index_add",
     "index_add_",
@@ -551,6 +555,7 @@ __all__ = [
     "less_equal",
     "less_equal_scalar",
     "lift_fresh_copy",
+    "linalg_householder_product",
     "linspace",
     "log",
     "log1p",
@@ -574,6 +579,8 @@ __all__ = [
     "lt_",
     "lt_scalar",
     "lt_scalar_",
+    "lu_unpack",
+    "lu_unpack_out",
     "masked_fill",
     "masked_fill_",
     "masked_scatter",
