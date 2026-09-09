@@ -12,227 +12,101 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Kunlunxin (XPU) lu_unpack backend override.
+"""Kunlunxin/XPU ``lu_unpack`` / ``lu_unpack_out``.
 
-Two backend-local deviations from the generic
-``flag_gems/ops/lu_unpack.py`` implementation:
+The generic ``flag_gems.ops.lu_unpack`` implementation (re-exported below)
+is correct and fast on this backend: the f32 test channel is fully clean and
+the benchmark dtype-equal-weight Gems Speedup is ~10.7x (see
+``harness/solution/lu_unpack/README.md``).  The one functional gap found by
+the semantic sweep is that empty inputs (``m == 0`` or ``n == 0``, which
+``torch.linalg.lu_factor`` happily produces and torch's ``lu_unpack``
+handles) crash the generic kernels at ``tl.arange(0, BLOCK_M)`` with
+``BLOCK_M`` reaching 0.  A host-side guard below reproduces torch's exact
+empty-input semantics (P = eye(m) when ``unpack_pivots``, L = (m, 0),
+U = (0, n) when ``unpack_data``, 0-element tensors otherwise) without
+touching the proven kernel path.
 
-1. Empty-input short-circuit. When ``m == 0`` or ``n == 0`` (so ``k == 0``),
-   ``triton.next_power_of_2(0) == 0`` makes ``tl.arange(0, BLOCK)`` fail to
-   compile (assert arange end > start). The short-circuit mirrors the ATen
-   native semantics for empty inputs:
+XPU-specific kernels were attempted for P (the generic's m > 512 path is a
+per-row serial k-chain) and for L/U (mask-free full blocks + clamped tails).
+All three candidate designs were rejected with evidence, because the
+unmasked / loop-carried-register-tensor patterns are unreliable on this
+device:
 
-   - P: ``(..., m, m)`` identity (no swap with k == 0); when m == 0 it is
-     ``(0, 0)`` empty.
-   - L: ``(..., m, k)`` empty; U: ``(..., k, n)`` empty.
+- a ``[BLOCK_M]`` register vector (``perm``) carried through the dynamic
+  k-loop miscompiles at some (m, k) combinations (e.g. (512, 512) hard
+  fault, (1024, 1024) silently wrong or faulting) — the same class as the
+  linalg_householder_product "register tensor through scf.for" finding;
+- unmasked 4/8-wide loads with the column-major (strided) LU layout that
+  ``torch.linalg.lu_factor`` returns on this device (``stride == (1, m)``)
+  are silently wrong at (4, 4) / (8, 8);
+- the XPU masked-memory path (``mask=`` + ``other=0``), used by the generic,
+  is the only one verified correct across the full shape matrix.
 
-2. Permutation-matrix (P) construction for ``m > 512``. The generic
-   ``lu_unpack_p_kernel_large`` launches one program per row and replays the
-   whole ``k``-step pivot loop inside every one of them, i.e. ``O(m * k)``
-   serialized scalar pivot loads. On XPU that single kernel is ~82% of the
-   whole operator at 1024x1024 / 4096x4096. Here the permutation is built
-   once in ``O(k)`` (a single program applying the LAPACK ``ipiv`` swaps to a
-   scratch index vector held in global memory) and then materialized with an
-   ``O(m)`` vectorized scatter.
-
-Everything else (L / U extraction, and the whole ``m <= 512`` P path) is
-delegated to the generic implementation - same Triton kernels, no
-CPU/ATen/native fallback involved.
+Per the harness rule "only candidates strictly better than the baseline are
+kept", the working generic implementation is kept unchanged.
 """
 
 import torch
-import triton
-import triton.language as tl
 
-from flag_gems.ops.lu_unpack import lu_unpack as _general_lu_unpack
-from flag_gems.ops.lu_unpack import lu_unpack_out as _general_lu_unpack_out
-from flag_gems.utils import libentry
-
-# The generic vectorized P kernel (one program per batch, BLOCK_M lanes) is
-# already launch-floor fast for m <= 512; only the per-row large path is
-# replaced.
-_P_SMALL_M = 512
-# Tile width for the index-vector init / scatter kernels. Plain masked
-# load+store only (no reduction), i.e. the pattern the generic L/U kernels
-# already rely on.
-_P_TILE = 256
-
-
-@libentry()
-@triton.jit
-def _lu_perm_init_kernel(
-    s_ptr,
-    m,
-    s_stride_b,
-    TILE: tl.constexpr,
-):
-    """s[b, v] = v -- identity index vector, one tile per program."""
-    batch_id = tl.program_id(0)
-    offs = tl.program_id(1) * TILE + tl.arange(0, TILE)
-    mask = offs < m
-    tl.store(s_ptr + batch_id * s_stride_b + offs, offs.to(tl.int32), mask=mask)
-
-
-@libentry()
-@triton.jit
-def _lu_perm_swap_kernel(
-    pivots_ptr,
-    s_ptr,
-    k,
-    pivots_stride_b,
-    pivots_stride_k,
-    s_stride_b,
-):
-    """Apply the LAPACK ipiv row interchanges to s in place, one program per
-    batch element.
-
-    ``s`` starts as the identity and ends up mapping *column* v of P to the
-    row that carries its 1.0, i.e. ``P[s[v], v] = 1``. This is the inverse of
-    the ``perm`` vector the generic kernels track (they swap the *values* i
-    and j of ``perm``, which is the same as swapping the *positions* i and j
-    of its inverse).
-
-    The swap is branchless: for ``j == i`` both stores write the same value
-    to the same address.
-
-    ``tl.debug_barrier()`` is mandatory on this backend: TritonXPU stages
-    global accesses through local memory (gm2lm / lm2gm), so without an
-    explicit flush a later iteration reads a stale copy of ``s`` and the
-    permutation silently comes out wrong (measured: only ~285 of 600 indices
-    distinct). See the solution note for the isolated probe.
-    """
-    batch_id = tl.program_id(0)
-    pivots_base = batch_id * pivots_stride_b
-    s_base = batch_id * s_stride_b
-    for i in range(k):
-        j = tl.load(pivots_ptr + pivots_base + i * pivots_stride_k) - 1
-        a = tl.load(s_ptr + s_base + i)
-        b = tl.load(s_ptr + s_base + j)
-        tl.debug_barrier()
-        tl.store(s_ptr + s_base + i, b)
-        tl.store(s_ptr + s_base + j, a)
-        tl.debug_barrier()
-
-
-@libentry()
-@triton.jit
-def _lu_perm_scatter_kernel(
-    s_ptr,
-    p_ptr,
-    m,
-    s_stride_b,
-    p_stride_b,
-    p_stride_m,
-    p_stride_n,
-    TILE: tl.constexpr,
-):
-    """Scatter P[s[v], v] = 1.0 into the pre-zeroed P, one tile per program."""
-    batch_id = tl.program_id(0)
-    cols = tl.program_id(1) * TILE + tl.arange(0, TILE)
-    mask = cols < m
-    rows = tl.load(s_ptr + batch_id * s_stride_b + cols, mask=mask, other=0)
-    offsets = batch_id * p_stride_b + rows * p_stride_m + cols * p_stride_n
-    tl.store(p_ptr + offsets, tl.full([TILE], 1.0, dtype=tl.float32), mask=mask)
-
-
-def _lu_unpack_permutation(LU_data, LU_pivots, batch_dims, batch_size, m, k):
-    P = torch.zeros(*batch_dims, m, m, device=LU_data.device, dtype=LU_data.dtype)
-    s = torch.empty(batch_size, m, device=LU_data.device, dtype=torch.int32)
-    num_tiles = triton.cdiv(m, _P_TILE)
-    grid = (batch_size, num_tiles)
-
-    _lu_perm_init_kernel[grid](s, m, s.stride(0), _P_TILE)
-    _lu_perm_swap_kernel[(batch_size,)](
-        LU_pivots,
-        s,
-        k,
-        LU_pivots.stride(-2) if LU_pivots.dim() > 1 else 0,
-        LU_pivots.stride(-1),
-        s.stride(0),
-    )
-    _lu_perm_scatter_kernel[grid](
-        s,
-        P,
-        m,
-        s.stride(0),
-        P.stride(-3) if len(batch_dims) > 0 else 0,
-        P.stride(-2),
-        P.stride(-1),
-        _P_TILE,
-    )
-    return P
-
-
-def _empty_lu_unpack_result(LU_data, LU_pivots, unpack_data, unpack_pivots):
-    m, n = LU_data.shape[-2], LU_data.shape[-1]
-    batch_dims = LU_data.shape[:-2]
-    device = LU_data.device
-    dtype = LU_data.dtype
-    k = min(m, n)
-    if unpack_pivots:
-        # k == 0: no pivot swap, P is the identity permutation
-        P = torch.zeros(*batch_dims, m, m, device=device, dtype=dtype)
-        if m > 0:
-            P.diagonal(dim1=-2, dim2=-1).fill_(1.0)
-    else:
-        P = torch.empty(0, device=device, dtype=dtype)
-    if unpack_data:
-        L = torch.empty(*batch_dims, m, k, device=device, dtype=dtype)
-        U = torch.empty(*batch_dims, k, n, device=device, dtype=dtype)
-    else:
-        L = torch.empty(0, device=device, dtype=dtype)
-        U = torch.empty(0, device=device, dtype=dtype)
-    return (P, L, U)
+from flag_gems.ops.lu_unpack import lu_unpack as _lu_unpack_generic
 
 
 def lu_unpack(LU_data, LU_pivots, unpack_data=True, unpack_pivots=True):
-    m, n = LU_data.shape[-2], LU_data.shape[-1]
+    """Unpacks the LU decomposition into P, L, U.
+
+    Matches ``torch.ops.aten.lu_unpack`` semantics; for empty inputs
+    (``k = min(m, n) == 0``) returns torch's exact shapes/values (P = eye(m)
+    when ``unpack_pivots``), which the generic kernel path cannot handle
+    (``tl.arange`` of size 0).
+    """
+    lu_shape = LU_data.shape
+    m, n = lu_shape[-2], lu_shape[-1]
+    dtype = LU_data.dtype
+    device = LU_data.device
+    batch_dims = lu_shape[:-2]
+
     if m == 0 or n == 0:
-        return _empty_lu_unpack_result(LU_data, LU_pivots, unpack_data, unpack_pivots)
-    if unpack_pivots and m > _P_SMALL_M:
-        batch_dims = LU_data.shape[:-2]
-        batch_size = 1
-        for dim in batch_dims:
-            batch_size *= dim
-        P = _lu_unpack_permutation(
-            LU_data, LU_pivots, batch_dims, batch_size, m, min(m, n)
-        )
-        # L / U still come from the generic Triton kernels; unpack_pivots is
-        # switched off there so its per-row P kernel is never launched.
-        _, L, U = _general_lu_unpack(LU_data, LU_pivots, unpack_data, False)
+        if unpack_pivots:
+            P = (
+                torch.eye(m, device=device, dtype=dtype)
+                .expand(*batch_dims, m, m)
+                .contiguous()
+            )
+        else:
+            P = torch.empty(0, device=device, dtype=dtype)
+        if unpack_data:
+            L = torch.empty(*batch_dims, m, 0, device=device, dtype=dtype)
+            U = torch.empty(*batch_dims, 0, n, device=device, dtype=dtype)
+        else:
+            L = torch.empty(0, device=device, dtype=dtype)
+            U = torch.empty(0, device=device, dtype=dtype)
         return (P, L, U)
-    return _general_lu_unpack(LU_data, LU_pivots, unpack_data, unpack_pivots)
+
+    return _lu_unpack_generic(LU_data, LU_pivots, unpack_data, unpack_pivots)
 
 
 def lu_unpack_out(
     LU_data, LU_pivots, unpack_data=True, unpack_pivots=True, *, P=None, L=None, U=None
 ):
-    m, n = LU_data.shape[-2], LU_data.shape[-1]
-    if m == 0 or n == 0 or (unpack_pivots and m > _P_SMALL_M):
-        if m == 0 or n == 0:
-            P_result, L_result, U_result = _empty_lu_unpack_result(
-                LU_data, LU_pivots, unpack_data, unpack_pivots
-            )
-        else:
-            P_result, L_result, U_result = lu_unpack(
-                LU_data, LU_pivots, unpack_data, unpack_pivots
-            )
-        # Write back through the raw native strided-copy engine
-        # (``aten::_copy_from``) instead of the gems-registered ``copy_``
-        # to avoid a nested dispatch through the overridden operator.
-        if P is not None and P_result.numel() > 0:
-            torch.ops.aten._copy_from(P_result, P, False)
-        else:
-            P = P_result
-        if L is not None and L_result.numel() > 0:
-            torch.ops.aten._copy_from(L_result, L, False)
-        else:
-            L = L_result
-        if U is not None and U_result.numel() > 0:
-            torch.ops.aten._copy_from(U_result, U, False)
-        else:
-            U = U_result
-        return (P, L, U)
-    return _general_lu_unpack_out(
-        LU_data, LU_pivots, unpack_data, unpack_pivots, P=P, L=L, U=U
+    """Out variant (see ``lu_unpack``); identical results, copied into the
+    provided outputs (or freshly allocated ones when ``None``)."""
+    P_result, L_result, U_result = lu_unpack(
+        LU_data, LU_pivots, unpack_data, unpack_pivots
     )
+
+    if P is not None and P_result.numel() > 0:
+        P.copy_(P_result)
+    else:
+        P = P_result
+
+    if L is not None and L_result.numel() > 0:
+        L.copy_(L_result)
+    else:
+        L = L_result
+
+    if U is not None and U_result.numel() > 0:
+        U.copy_(U_result)
+    else:
+        U = U_result
+
+    return (P, L, U)
