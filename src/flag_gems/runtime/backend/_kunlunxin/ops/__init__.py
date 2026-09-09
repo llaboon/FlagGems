@@ -879,6 +879,7 @@ __all__ = [
     "igammac",
     "igammac_",
     "igammac_out",
+    "igamma_",
     "im2col",
     "index",
     "index_add",
