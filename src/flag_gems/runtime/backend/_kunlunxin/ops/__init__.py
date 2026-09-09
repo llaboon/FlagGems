@@ -339,6 +339,7 @@ from .log_softmax import (
     log_softmax_backward_out,
     log_softmax_out,
 )
+from .log_softmax import log_softmax, log_softmax_backward, log_softmax_backward_out
 from .logaddexp import logaddexp, logaddexp_out
 from .logaddexp2 import logaddexp2, logaddexp2_out
 from .logcumsumexp import logcumsumexp, logcumsumexp_out
