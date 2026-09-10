@@ -259,7 +259,7 @@ from .hardswish_ import hardswish_
 from .heaviside_ import heaviside_  # noqa: F401
 from .histc import histc
 from .hstack import hstack
-from .igamma_ import igamma_
+from .igammac_ import igammac_, special_gammaincc
 from .index import index
 from .index_add import index_add, index_add_
 from .index_copy_ import index_copy_
@@ -461,6 +461,12 @@ from .segment_reduce import (
 )
 from .select_backward import select_backward
 from .select_scatter import select_scatter
+from .segment_reduce import (
+    _segment_reduce_backward,
+    _segment_reduce_backward_out,
+    segment_reduce,
+    segment_reduce_out,
+)
 from .selu import selu, selu_
 from .sgn import sgn, sgn_out
 from .sgn_ import sgn_
@@ -617,10 +623,16 @@ __all__ = [
     "_pdist_backward",
     "_pdist_forward",
     "_safe_softmax",
-    "_scaled_dot_product_fused_attention_overrideable",
     "_segment_reduce_backward",
     "_segment_reduce_backward_out",
-    "_thnn_fused_lstm_cell_backward_impl",
+    "digamma_",
+    "soft_margin_loss",
+    "soft_margin_loss_out",
+    "soft_margin_loss_backward",
+    "special_log_softmax",
+    "special_logsumexp",
+    "softshrink",
+    "softshrink_out",
     "_unique2",
     "_unsafe_masked_index_put_accumulate",
     "_upsample_bicubic2d_aa",
@@ -884,7 +896,7 @@ __all__ = [
     "hadamard_transform",
     "hardsigmoid",
     "hardsigmoid_out",
-    "igamma_",
+    "igammac_",
     "index",
     "index_add",
     "index_add_",
@@ -1157,6 +1169,8 @@ __all__ = [
     "segment_reduce_out",
     "select_backward",
     "select_scatter",
+    "segment_reduce",
+    "segment_reduce_out",
     "selu",
     "selu_",
     "sgn",
@@ -1196,43 +1210,7 @@ __all__ = [
     "softshrink_out",
     "sort",
     "sort_stable",
-    "special_bessel_j0",
-    "special_bessel_j1",
-    "special_bessel_y0",
-    "special_bessel_y1",
-    "special_chebyshev_polynomial_u",
-    "special_chebyshev_polynomial_v",
-    "special_chebyshev_polynomial_w",
-    "special_chebyshev_polynomial_w_out",
-    "special_digamma",
-    "special_erf",
-    "special_erfcx",
-    "special_erfinv",
-    "special_erfinv_",
-    "special_erfinv_out",
-    "special_exp2",
-    "special_gammainc",
     "special_gammaincc",
-    "special_gammaln",
-    "special_gammaln_out",
-    "special_i0e",
-    "special_i0e_out",
-    "special_legendre_polynomial_p",
-    "special_log1p_out",
-    "special_log_ndtr",
-    "special_log_ndtr_",
-    "special_log_softmax",
-    "special_logsumexp",
-    "special_modified_bessel_k0",
-    "special_modified_bessel_k0_out",
-    "special_multigammaln",
-    "special_ndtri",
-    "special_shifted_chebyshev_polynomial_t",
-    "special_shifted_chebyshev_polynomial_u",
-    "special_shifted_chebyshev_polynomial_u_",
-    "special_shifted_chebyshev_polynomial_v",
-    "special_shifted_chebyshev_polynomial_w",
-    "special_sinc",
     "sqrt",
     "sqrt_",
     "square",
