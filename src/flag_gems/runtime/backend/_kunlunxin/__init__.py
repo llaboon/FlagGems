@@ -24,6 +24,7 @@ vendor_info = VendorDescriptor(
 
 CUSTOMIZED_UNUSED_OPS = (
     "cumsum",
+    "nll_loss2d",
     "randperm",
     "topk",
     "unique",
