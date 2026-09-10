@@ -36,7 +36,7 @@ def nll_loss_forward_kernel(
     N,
     C,
     reduction: tl.constexpr = 1,
-    BLOCK_N: tl.constexpr = 128,
+    BLOCK_N: tl.constexpr = 1024,
 ):
     pid_n = tl.program_id(0)
     offsets_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -59,6 +59,77 @@ def nll_loss_forward_kernel(
     tl.store(out_ptr + offsets_n, out, mask=mask_n)
     if reduction == 1:
         tl.store(ignore_wgt_tgt_ptr + offsets_n, wgt_tgt, mask=mask_n)
+
+
+@libentry()
+@triton.jit(do_not_specialize=["ignore_index"])
+def nll_loss_forward_reduce_kernel(
+    inp_ptr,
+    tgt_ptr,
+    wgt_ptr,
+    mid_out_ptr,
+    mid_wgt_ptr,
+    ignore_index,
+    N,
+    C,
+    reduction: tl.constexpr = 1,
+    BLOCK_N: tl.constexpr = 512,
+):
+    pid_n = tl.program_id(0)
+    offsets_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    mask_n = offsets_n < N
+
+    tgt = tl.load(tgt_ptr + offsets_n, mask=mask_n, other=0)
+    ignore_mask = not (tgt == ignore_index) and mask_n
+
+    if wgt_ptr is None:
+        wgt_tgt = ignore_mask.to(tl.float32)
+    else:
+        wgt_tgt = tl.load(wgt_ptr + tgt, mask=ignore_mask, other=0).to(tl.float32)
+
+    inp_tgt_ptrs = inp_ptr + offsets_n * C + tgt
+    inp_tgt = tl.load(inp_tgt_ptrs, mask=ignore_mask, other=0).to(tl.float32)
+
+    # Materialize masked lanes to exactly 0 before the reduction: `other=0` is
+    # unreliable on XPU (garbage can leak into masked-out lanes) and a masked
+    # `tl.sum` hangs the device, so we zero out non-contributing lanes and do an
+    # unmasked reduction instead.
+    out = tl.where(ignore_mask, inp_tgt * wgt_tgt * -1, 0.0)
+    wgt_tgt = tl.where(ignore_mask, wgt_tgt, 0.0)
+
+    sum_out = tl.sum(out)
+    tl.store(mid_out_ptr + pid_n, sum_out)
+    if reduction == 1:
+        sum_wgt = tl.sum(wgt_tgt)
+        tl.store(mid_wgt_ptr + pid_n, sum_wgt)
+
+
+@libentry()
+@triton.jit
+def nll_loss_forward_finalize_kernel(
+    mid_out_ptr,
+    mid_wgt_ptr,
+    out_ptr,
+    total_wgt_ptr,
+    num_blocks,
+    reduction: tl.constexpr = 1,
+    BLOCK_MID: tl.constexpr = 128,
+):
+    offsets = tl.arange(0, BLOCK_MID)
+    mask = offsets < num_blocks
+
+    mid_out = tl.load(mid_out_ptr + offsets, mask=mask, other=0.0)
+    mid_out = tl.where(mask, mid_out, 0.0)
+    sum_out = tl.sum(mid_out)
+
+    if reduction == 1:
+        mid_wgt = tl.load(mid_wgt_ptr + offsets, mask=mask, other=0.0)
+        mid_wgt = tl.where(mask, mid_wgt, 0.0)
+        sum_wgt = tl.sum(mid_wgt)
+        tl.store(total_wgt_ptr, sum_wgt)
+        tl.store(out_ptr, sum_out / sum_wgt)
+    else:
+        tl.store(out_ptr, sum_out)
 
 
 @libentry()
@@ -238,40 +309,64 @@ def nll_loss_forward(self, target, weight=None, reduction=1, ignore_index=-100):
     target = target.contiguous()
     weight = None if weight is None else weight.contiguous()
 
-    out = torch.empty(shape, dtype=self.dtype, device=self.device)
-    ignore_weight_tgt = None
-    if reduction == 1:
-        ignore_weight_tgt = torch.zeros(
-            target.shape, dtype=self.dtype, device=self.device
-        )
-
-    grid = lambda meta: (triton.cdiv(N, meta["BLOCK_N"]),)
-    with torch_device_fn.device(self.device):
-        nll_loss_forward_kernel[grid](
-            self,  # torch.Size([4096, 256])
-            target,  # torch.Size([4096]), tensor([174, 125, 174,  ..., 216, 171, 120])
-            weight,  # torch.Size([256])
-            out,  # torch.Size([4096])
-            ignore_weight_tgt,  # torch.Size([4096])
-            ignore_index,  # 1
-            N,  # 4096
-            C,  # 256
-            reduction,  # 0
-            is_use_mask_zero=True,
-        )
-
-    # redution: 0-None, 1-mean, 2-sum
+    # reduction: 0-None, 1-mean, 2-sum
     if reduction == 0:
+        out = torch.empty(shape, dtype=self.dtype, device=self.device)
+        grid = lambda meta: (triton.cdiv(N, meta["BLOCK_N"]),)
+        with torch_device_fn.device(self.device):
+            nll_loss_forward_kernel[grid](
+                self,
+                target,
+                weight,
+                out,
+                None,
+                ignore_index,
+                N,
+                C,
+                reduction,
+                is_use_mask_zero=True,
+            )
         output = out
         total_weight = torch.empty([], dtype=self.dtype, device=self.device)
-    elif reduction == 1:
-        total_out = torch.sum(out)
-        total_weight = torch.sum(ignore_weight_tgt).to(self.dtype)
-        output = (total_out / total_weight).to(self.dtype)
     else:
-        total_out = torch.sum(out)
-        output = total_out.to(self.dtype)
+        # Fused single-pass reduction for mean/sum: the previous torch.sum + div
+        # + cast tail launched several 0-dim kernels and hit host-device syncs,
+        # dominating the op's latency (~200us). Reduce per-block partials in one
+        # kernel, then finalize (sum + divide + cast) in a second.
+        num_blocks = triton.cdiv(N, 512)
+        mid_out = torch.empty(
+            (num_blocks,), dtype=torch.float32, device=self.device
+        )
+        mid_wgt = torch.empty(
+            (num_blocks,), dtype=torch.float32, device=self.device
+        )
+        output = torch.empty([], dtype=self.dtype, device=self.device)
         total_weight = torch.empty([], dtype=self.dtype, device=self.device)
+        grid = lambda meta: (triton.cdiv(N, meta["BLOCK_N"]),)
+        with torch_device_fn.device(self.device):
+            nll_loss_forward_reduce_kernel[grid](
+                self,
+                target,
+                weight,
+                mid_out,
+                mid_wgt,
+                ignore_index,
+                N,
+                C,
+                reduction,
+                is_use_mask_zero=True,
+            )
+            block_mid = triton.next_power_of_2(num_blocks)
+            nll_loss_forward_finalize_kernel[(1,)](
+                mid_out,
+                mid_wgt,
+                output,
+                total_weight,
+                num_blocks,
+                reduction,
+                block_mid,
+                is_use_mask_zero=True,
+            )
 
     return output, total_weight
 

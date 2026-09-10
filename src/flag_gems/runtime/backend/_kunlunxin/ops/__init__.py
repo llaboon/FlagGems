@@ -158,6 +158,7 @@ from .hadamard_transform import hadamard_transform
 from .hardsigmoid import hardsigmoid, hardsigmoid_out
 from .hstack import hstack
 from .igamma_ import igamma_
+from .igammac_ import igammac_, special_gammaincc
 from .index import index
 from .index_add import index_add, index_add_
 from .index_put import index_put, index_put_
@@ -277,6 +278,12 @@ from .scaled_softmax import scaled_softmax_backward, scaled_softmax_forward
 from .scatter import scatter, scatter_
 from .scatter_add_ import scatter_add_
 from .select_scatter import select_scatter
+from .segment_reduce import (
+    _segment_reduce_backward,
+    _segment_reduce_backward_out,
+    segment_reduce,
+    segment_reduce_out,
+)
 from .selu import selu, selu_
 from .sgn_ import sgn_
 from .sigmoid import sigmoid, sigmoid_, sigmoid_backward
@@ -344,6 +351,16 @@ __all__ = [
     "_is_all_true",
     "_safe_softmax",
     "_thnn_fused_lstm_cell_backward_impl",
+    "_segment_reduce_backward",
+    "_segment_reduce_backward_out",
+    "digamma_",
+    "soft_margin_loss",
+    "soft_margin_loss_out",
+    "soft_margin_loss_backward",
+    "special_log_softmax",
+    "special_logsumexp",
+    "softshrink",
+    "softshrink_out",
     "_unique2",
     "_upsample_bicubic2d_aa",
     "abs",
@@ -461,7 +478,6 @@ __all__ = [
     "diag",
     "diag_embed",
     "diagonal_backward",
-    "digamma_",
     "div_mode",
     "div_mode_",
     "dot",
@@ -529,6 +545,7 @@ __all__ = [
     "hardsigmoid_out",
     "hstack",
     "igamma_",
+    "igammac_",
     "index",
     "index_add",
     "index_add_",
@@ -700,6 +717,8 @@ __all__ = [
     "scatter_",
     "scatter_add_",
     "select_scatter",
+    "segment_reduce",
+    "segment_reduce_out",
     "selu",
     "selu_",
     "sgn_",
@@ -717,18 +736,12 @@ __all__ = [
     "sinc_",
     "slice_backward",
     "slice_scatter",
-    "soft_margin_loss",
-    "soft_margin_loss_backward",
-    "soft_margin_loss_out",
     "softmax",
     "softmax_backward",
     "softplus",
-    "softshrink",
-    "softshrink_out",
     "sort",
     "sort_stable",
-    "special_log_softmax",
-    "special_logsumexp",
+    "special_gammaincc",
     "sqrt",
     "sqrt_",
     "stack",
