@@ -47,6 +47,7 @@ from ._prelu_kernel import _prelu_kernel  # noqa: F401
 from ._scaled_dot_product_fused_attention_overrideable import (
     _scaled_dot_product_fused_attention_overrideable,
 )
+from ._native_batch_norm_legit_functional import _native_batch_norm_legit_functional
 from ._thnn_fused_lstm_cell_backward_impl import _thnn_fused_lstm_cell_backward_impl
 from ._unsafe_masked_index_put_accumulate import _unsafe_masked_index_put_accumulate
 from ._upsample_bilinear2d_aa import _upsample_bilinear2d_aa  # noqa: F401
@@ -539,6 +540,7 @@ from .special_i1 import special_i1, special_i1_out  # noqa: F401
 from .special_legendre_polynomial_p import special_legendre_polynomial_p
 from .special_log1p import special_log1p_out
 from .special_log_ndtr import special_log_ndtr, special_log_ndtr_
+from .special_legendre_polynomial_p import special_legendre_polynomial_p
 from .special_log_softmax import special_log_softmax
 from .special_logsumexp import special_logsumexp
 from .special_modified_bessel_k0 import (
@@ -646,6 +648,18 @@ __all__ = [
     "_segment_reduce_backward",
     "_segment_reduce_backward_out",
     "_thnn_fused_lstm_cell_backward_impl",
+    "_thnn_fused_lstm_cell_backward_impl",
+    "_conv_depthwise2d",
+    "_safe_softmax",
+    "digamma_",
+    "soft_margin_loss",
+    "soft_margin_loss_out",
+    "soft_margin_loss_backward",
+    "special_legendre_polynomial_p",
+    "special_log_softmax",
+    "special_logsumexp",
+    "softshrink",
+    "softshrink_out",
     "_unique2",
     "_unsafe_masked_index_put_accumulate",
     "_upsample_bicubic2d_aa",
