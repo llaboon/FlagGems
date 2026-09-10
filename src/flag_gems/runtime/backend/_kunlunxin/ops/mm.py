@@ -343,57 +343,33 @@ def get_higher_dtype(a, b):
             return a
 
 
-def _block_m(M):
-    return 128 if M <= 512 else 256
-
-
-def _block_n(N):
-    return 128 if N <= 512 else 256
-
-
-def _block_k(M, N):
-    if M <= 512 and N <= 512:
-        return 128
-    return 256
-
-
-def _pad_k(a, b, M, K, N, blk_k, device):
-    """Materialize strided / K-unaligned inputs into contiguous buffers.
-
-    ``mm_kernel`` loads full (BLOCK_M, BLOCK_K) / (BLOCK_K, BLOCK_N) tiles with
-    no OOB mask (TritonXPU does not honour masked loads whose addresses leave
-    the allocation; see the mm_kernel comment), so the K extent must cover
-    every column/row the K-loop touches.  The copy goes through the native
-    ``_copy_from`` engine (gems does not override it); ``x.contiguous()`` must
-    not be used because the registered ``_to_copy`` override mis-handles
-    strided sources (see the mm() comment), and the kernel itself is
-    stride-generic, so row-major inputs are passed through untouched.
-    """
-    kp = triton.cdiv(K, blk_k) * blk_k
-    if (a.stride(0), a.stride(1)) != (K, 1) or kp != K:
-        ap = torch.zeros((M, kp), device=device, dtype=a.dtype)
-        torch.ops.aten._copy_from(a, ap[:, :K], False)
-        a = ap
-    if (b.stride(0), b.stride(1)) != (N, 1) or kp != K:
-        bp = torch.zeros((kp, N), device=device, dtype=b.dtype)
-        torch.ops.aten._copy_from(b, bp[:K, :], False)
-        b = bp
-    return a, b, kp
-
-
-def _launch_kernel(ker, a, b, c, M, N, K, dot_out_dtype, device, blocks=None):
-    """Launch ``ker`` on the (possibly padded) buffers.
-
-    ``blocks`` = (blk_m, blk_n, blk_k) is passed explicitly for ``mm_kernel``
-    so the launched tiles equal the host pad divisors exactly: the unmasked
-    store covers cdiv(M, BLOCK_M)*BLOCK_M rows x cdiv(N, BLOCK_N)*BLOCK_N
-    columns and the K-loop loads cover cdiv(K, BLOCK_K)*BLOCK_K columns, all
-    of which are in-bounds of the padded C = (cdiv(M,blk_m)*blk_m,
-    cdiv(N,blk_n)*blk_n) / K-padded A,B when BLOCK_* == (blk_m, blk_n, blk_k).
-    ``mm_kernel_aligned`` supplies BLOCK_* through its (heuristics) decorator
-    and must only be used when those tiles divide the shape -- verify with
-    the same ``_block_*`` values and pass blocks=None for it.
-    """
+def mm(a, b):
+    logger.debug("GEMS_KUNLUNXIN MM")
+    device = a.device
+    # handle non-contiguous inputs if necessary
+    # Only materialise a copy when neither stride is 1.  Transposed views with
+    # a unit inner stride (e.g. column-major B, or the self-transpose pair)
+    # are passed to the kernel directly: the kernel takes explicit strides and
+    # the vendor autotuner generates a_trans/b_trans-aware configs.  The
+    # previous unconditional contiguous() copy turned every column-major B (a
+    # transpose view) into a full strided transposition, costing 12-24% of the
+    # column-major-B latency (dtype-equal-weight Gems Speedup 0.8197 -> 1.0762
+    # on the full 726-case mm_out matrix).  Strides of 0 (broadcast / expand
+    # views, e.g. autograd's sum().backward()) must still be copied: the XPU
+    # backend miscompiles the uniform-address tile load.
+    if not (a.stride(0) == 1 or a.stride(1) == 1):
+        a = a.contiguous()
+    if not (b.stride(0) == 1 or b.stride(1) == 1):
+        b = b.contiguous()
+    # checks constraints
+    assert a.shape[1] == b.shape[0], "incompatible dimensions"
+    M, K = a.shape
+    _, N = b.shape
+    # allocates output
+    c_dtype = get_higher_dtype(a.dtype, b.dtype)
+    c = torch.empty((M, N), device=device, dtype=c_dtype)
+    dot_out_dtype = tl.float32
+    # launch kernel
     grid = lambda META: (
         triton.cdiv(M, META["BLOCK_M"]) * triton.cdiv(N, META["BLOCK_N"]),
         META["SPLIT_K"],
@@ -516,8 +492,21 @@ def mm(a, b):
 
 def mm_out(a, b, *, out):
     logger.debug("GEMS_KUNLUNXIN MM_OUT")
-    # NOTE: no ``x.contiguous()`` here - see the mm() comment (the registered
-    # _to_copy override mis-handles strided inputs).
+    # handle non-contiguous inputs if necessary
+    # Only materialise a copy when neither stride is 1.  Transposed views with
+    # a unit inner stride (e.g. column-major B, or the self-transpose pair)
+    # are passed to the kernel directly: the kernel takes explicit strides and
+    # the vendor autotuner generates a_trans/b_trans-aware configs.  The
+    # previous unconditional contiguous() copy turned every column-major B (a
+    # transpose view) into a full strided transposition, costing 12-24% of the
+    # column-major-B latency (dtype-equal-weight Gems Speedup 0.8197 -> 1.0762
+    # on the full 726-case mm_out matrix).  Strides of 0 (broadcast / expand
+    # views, e.g. autograd's sum().backward()) must still be copied: the XPU
+    # backend miscompiles the uniform-address tile load.
+    if not (a.stride(0) == 1 or a.stride(1) == 1):
+        a = a.contiguous()
+    if not (b.stride(0) == 1 or b.stride(1) == 1):
+        b = b.contiguous()
     # checks constraints
     assert a.shape[1] == b.shape[0], "incompatible dimensions"
     M, K = a.shape

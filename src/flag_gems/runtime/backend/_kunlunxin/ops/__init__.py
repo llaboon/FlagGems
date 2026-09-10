@@ -30,17 +30,7 @@ from ._functional_sym_constrain_range_for_size import (
 from ._fused_adam import _fused_adam, _fused_adam_
 from ._fused_rms_norm import _fused_rms_norm  # noqa: F401
 from ._is_all_true import _is_all_true
-from ._jagged_to_padded_dense_forward import _jagged_to_padded_dense_forward
-from ._linalg_eigvals import _linalg_eigvals
 from ._native_batch_norm_legit_functional import _native_batch_norm_legit_functional
-from ._native_batch_norm_legit_no_training import _native_batch_norm_legit_no_training
-from ._nested_view_from_buffer_copy import _nested_view_from_buffer_copy
-from ._pdist_backward import _pdist_backward
-from ._pdist_forward import _pdist_forward, pdist
-from ._prelu_kernel import _prelu_kernel  # noqa: F401
-from ._scaled_dot_product_fused_attention_overrideable import (
-    _scaled_dot_product_fused_attention_overrideable,
-)
 from ._thnn_fused_lstm_cell_backward_impl import _thnn_fused_lstm_cell_backward_impl
 from ._unsafe_masked_index_put_accumulate import _unsafe_masked_index_put_accumulate
 from ._upsample_bilinear2d_aa import _upsample_bilinear2d_aa  # noqa: F401
@@ -486,33 +476,7 @@ from .softmax import softmax, softmax_backward, softmax_backward_out, softmax_ou
 from .softplus import softplus, softplus_backward
 from .softshrink import softshrink, softshrink_out
 from .sort import sort, sort_stable
-from .sparse_sampled_addmm import (  # noqa: F401
-    sparse_sampled_addmm,
-    sparse_sampled_addmm_out,
-)
-from .special_bessel_j0 import special_bessel_j0
-from .special_bessel_j1 import special_bessel_j1
-from .special_bessel_y0 import special_bessel_y0
-from .special_bessel_y1 import special_bessel_y1
-from .special_chebyshev_polynomial_u import special_chebyshev_polynomial_u
-from .special_chebyshev_polynomial_v import special_chebyshev_polynomial_v
-from .special_chebyshev_polynomial_w import (
-    special_chebyshev_polynomial_w,
-    special_chebyshev_polynomial_w_out,
-)
-from .special_digamma import special_digamma
-from .special_erfc import special_erfc
-from .special_erfcx import special_erfcx
-from .special_erfinv import special_erfinv, special_erfinv_, special_erfinv_out
-from .special_exp2 import special_exp2
-from .special_gammainc import special_gammainc
-from .special_gammaincc import special_gammaincc
-from .special_gammaln import special_gammaln, special_gammaln_out
-from .special_i0e import special_i0e, special_i0e_out
-from .special_i1 import special_i1, special_i1_out  # noqa: F401
 from .special_legendre_polynomial_p import special_legendre_polynomial_p
-from .special_log1p import special_log1p, special_log1p_out
-from .special_log_ndtr import special_log_ndtr, special_log_ndtr_
 from .special_log_softmax import special_log_softmax
 from .special_logsumexp import special_logsumexp
 from .special_modified_bessel_k0 import (
@@ -618,10 +582,8 @@ __all__ = [
     "_index_put_impl_",
     "_is_all_true",
     "_native_batch_norm_legit_functional",
-    "_native_batch_norm_legit_no_training",
-    "_nested_view_from_buffer_copy",
-    "_pdist_backward",
-    "_pdist_forward",
+    "_thnn_fused_lstm_cell_backward_impl",
+    "_conv_depthwise2d",
     "_safe_softmax",
     "_segment_reduce_backward",
     "_segment_reduce_backward_out",
@@ -629,6 +591,7 @@ __all__ = [
     "soft_margin_loss",
     "soft_margin_loss_out",
     "soft_margin_loss_backward",
+    "special_legendre_polynomial_p",
     "special_log_softmax",
     "special_logsumexp",
     "softshrink",
