@@ -276,6 +276,7 @@ from .hypot import hypot
 from .igamma_ import igamma_  # noqa: F401
 from .igammac import igammac, igammac_out
 from .igammac_ import igammac_
+from .igammac_ import igammac_, special_gammaincc
 from .im2col import im2col
 from .igamma_ import igamma_
 from .index import index
