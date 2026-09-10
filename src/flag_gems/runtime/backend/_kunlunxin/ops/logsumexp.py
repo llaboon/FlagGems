@@ -94,6 +94,125 @@ def logsumexp_kernel_multirow(
 
 @libentry()
 @triton.jit
+def logsumexp_kernel_fused2(
+    output_ptr,
+    input_ptr,
+    M,
+    N,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    NEED_MASK: tl.constexpr,
+    NEED_COLMASK: tl.constexpr,
+):
+    """Fused two-pass logsumexp for the fp32 inner-dim range (64 < N).
+
+    Used for fp32 (and any non-16-bit dtype) where a [TILE_M, N] tile exceeds
+    register capacity and the compiler spills it to local memory and re-reads
+    it for each reduction (3 reads/element -> ~190GB/s). Instead, both
+    reductions use the mean_dim-style persisted [BLOCK_M, BLOCK_N] fp32
+    accumulator:
+
+      - Pass 1 (max): elementwise ``tl.maximum`` accumulate over N in BLOCK_N
+        chunks + a single narrow ``tl.max`` reduce over BLOCK_N. Plain float
+        max here is as fast as ``tl.sum`` (~550GB/s at BLOCK_M=64/512) -- the
+        uint32-key trick is a *liability* in this structure (int key ops + the
+        old wide-row reduce are ~3.5x slower than plain float max), so it is
+        dropped.
+      - Pass 2 (exp-sum): elementwise ``z_acc += exp(a - safe_m)`` accumulate
+        + a single narrow reduce over BLOCK_N.
+
+    This reads each element from global memory twice (once per pass) instead
+    of three times, and never materializes the full [BLOCK_M, N] tile. At
+    BLOCK_M=64/BLOCK_N=512 this reaches ~0.32ms for [4096,4096] fp32 vs the
+    old ~0.53ms (per-op split: plain float max == plain sum == 550GB/s, exp is
+    the irreducible vexpf ~70Gelem/s cost).
+
+    Single-pass online variants are all worse on this backend for fp32:
+    elementwise online needs 2x exp (1.22ms), chunked-with-scalar-rescale
+    needs per-chunk wide reduces (~3 Gelem/s/reduce, 0.38ms). The two-pass
+    elementwise structure is the measured optimum here.
+    """
+    pid = ext.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)[:, None]
+    X = input_ptr + pid * N
+    row_mask = pid < M
+    # ---- Pass 1: max (plain float elementwise accumulate + narrow reduce) ----
+    m_acc = tl.full([BLOCK_M, BLOCK_N], float("-inf"), tl.float32)
+    for off in range(0, N, BLOCK_N):
+        cols = off + tl.arange(0, BLOCK_N)[None, :]
+        mask = row_mask & (cols < N)
+        a = tl.load(X + cols, mask, other=-float("inf")).to(tl.float32)
+        m_acc = tl.maximum(m_acc, a)
+    m = tl.max(m_acc, axis=1)[:, None]
+    safe_m = tl.where(m == float("-inf"), 0.0, m)
+    # ---- Pass 2: exp-sum (elementwise accumulate + narrow reduce) ----
+    z_acc = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+    for off in range(0, N, BLOCK_N):
+        cols = off + tl.arange(0, BLOCK_N)[None, :]
+        mask = row_mask & (cols < N)
+        a = tl.load(X + cols, mask, other=-float("inf")).to(tl.float32)
+        z_acc += tl.exp(a - safe_m)
+    z = tl.sum(z_acc, axis=1)[:, None]
+    res = tl.where(
+        m == float("-inf"), m,
+        tl.where(m == float("inf"), m, safe_m + tl.log(z)),
+    )
+    tl.store(output_ptr + pid, res, row_mask)
+
+
+@libentry()
+@triton.jit
+def logsumexp_kernel_chunked(
+    output_ptr,
+    input_ptr,
+    M,
+    N,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    NEED_MASK: tl.constexpr,
+    NEED_COLMASK: tl.constexpr,
+):
+    """Single-read online logsumexp for fp16/bf16, 64 < N <= _MULTIROW_MAX_N.
+
+    For the 2-byte dtypes the fused two-pass kernel re-reads and re-converts
+    the data (fp16/bf16 -> fp32) a second time, and that extra convert+read
+    costs more than a single pass with per-chunk wide reduces. This variant
+    reads each element from global memory exactly once:
+
+      per chunk: m_c = max(a, axis=1)  (wide reduce over BLOCK_N)
+                 z_c = sum(exp(a - m_new), axis=1)
+                 online scalar rescale per row (z_row * exp(m_row - m_new))
+      final:     out = m + log(z)
+
+    The per-chunk wide reduce is cheap relative to the fp16/bf16 memory saved:
+    measured [1024,1024] fp16 0.70 vs fused2 0.49, [4096,4096] fp16 0.44 vs
+    0.37, bf16 0.70/0.45 vs 0.45/0.31. For fp32 (4-byte) the wide reduce cost
+    outweighs the single-read saving, so fp32 keeps the fused two-pass kernel.
+    """
+    pid = ext.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)[:, None]
+    X = input_ptr + pid * N
+    row_mask = pid < M
+    m_row = tl.full([BLOCK_M, 1], float("-inf"), tl.float32)
+    z_row = tl.full([BLOCK_M, 1], 0.0, tl.float32)
+    for off in range(0, N, BLOCK_N):
+        cols = off + tl.arange(0, BLOCK_N)[None, :]
+        mask = row_mask & (cols < N)
+        a = tl.load(X + cols, mask, other=-float("inf")).to(tl.float32)
+        m_c = tl.max(a, axis=1)[:, None]
+        m_new = tl.maximum(m_row, m_c)
+        z_c = tl.sum(tl.exp(a - m_new), axis=1)[:, None]
+        all_neg = m_new == float("-inf")
+        z_row = tl.where(all_neg, z_row, z_row * tl.exp(m_row - m_new) + z_c)
+        m_row = m_new
+    safe_m = tl.where(m_row == float("-inf"), 0.0, m_row)
+    res = tl.where(
+        m_row == float("-inf"), m_row,
+        tl.where(m_row == float("inf"), m_row, safe_m + tl.log(z_row)),
+    )
+    tl.store(output_ptr + pid, res, row_mask)
+
+
+@libentry()
+@triton.jit
 def logsumexp_kernel_partial(
     mrow_ptr,
     zrow_ptr,
@@ -213,27 +332,69 @@ def logsumexp_kernel_tail_partials(
 
 
 def _reduce_inner_small(inp, rows, N, out):
-    """Single-tile multirow kernel for N <= _MULTIROW_MAX_N."""
+    """Inner-dim reduction for N <= _MULTIROW_MAX_N.
+
+    N <= 64 keeps the uint32-key multirow kernel (measured 1.0x for the small
+    [64,64] official shape; the other kernels are ~0.88x there). 64 < N splits
+    by dtype: fp32 -> fused two-pass (persisted fp32 accumulator + narrow
+    reduce), fp16/bf16 -> single-read chunked online. Both beat the multirow
+    kernel for every larger N we measured: [256,256] 0.83, [512,512] 0.85,
+    [1024,1024] 0.67 vs 0.46, [4096,4096] 0.50 vs 0.29 (fp32 fused2; fp16/bf16
+    chunked ~0.42-0.44 on [4096,4096]).
+    """
     if N <= 64:
         TILE_M = 16
-    elif N <= 256:
-        TILE_M = 64
-    elif N <= 1024:
-        TILE_M = 32
+        need_mask = 1 if rows % TILE_M else 0
+        grid = (triton.cdiv(rows, TILE_M), 1, 1)
+        logsumexp_kernel_multirow[grid](
+            out,
+            inp,
+            rows,
+            N=N,
+            TILE_M=TILE_M,
+            NEED_MASK=need_mask,
+            num_warps=4,
+            buffer_size_limit=2048,
+        )
+        return
+    # Fused two-pass (fp32) or single-read chunked (fp16/bf16):
+    # BLOCK_M=64 saturates the device for grid>=64 (verified 550GB/s on
+    # plain-sum at BM=64/BN=512); BLOCK_N=min(next_pow2(N), 512) keeps the
+    # [64,512] persisted accumulator at the register/LM sweet spot (BN=1024
+    # measured ~0.1ms slower per pass). fp16/bf16 use the single-read chunked
+    # kernel because their re-conversion in the two-pass kernel costs more
+    # than the wide-reduce overhead of one pass.
+    BLOCK_M = 64
+    BLOCK_N = min(triton.next_power_of_2(N), 512)
+    need_mask = 1 if rows % BLOCK_M else 0
+    need_colmask = 1 if N % BLOCK_N else 0
+    grid = (triton.cdiv(rows, BLOCK_M), 1, 1)
+    if inp.dtype in (torch.float16, torch.bfloat16):
+        logsumexp_kernel_chunked[grid](
+            out,
+            inp,
+            rows,
+            N,
+            BLOCK_M=BLOCK_M,
+            BLOCK_N=BLOCK_N,
+            NEED_MASK=need_mask,
+            NEED_COLMASK=need_colmask,
+            num_warps=4,
+            buffer_size_limit=2048,
+        )
     else:
-        TILE_M = 8
-    need_mask = 1 if rows % TILE_M else 0
-    grid = (triton.cdiv(rows, TILE_M), 1, 1)
-    logsumexp_kernel_multirow[grid](
-        out,
-        inp,
-        rows,
-        N=N,
-        TILE_M=TILE_M,
-        NEED_MASK=need_mask,
-        num_warps=4,
-        buffer_size_limit=2048,
-    )
+        logsumexp_kernel_fused2[grid](
+            out,
+            inp,
+            rows,
+            N,
+            BLOCK_M=BLOCK_M,
+            BLOCK_N=BLOCK_N,
+            NEED_MASK=need_mask,
+            NEED_COLMASK=need_colmask,
+            num_warps=4,
+            buffer_size_limit=2048,
+        )
 
 
 def _reduce_tail_partials(mrow, zrow, inp, rows, row_stride, tail_n):

@@ -168,6 +168,7 @@ from .cos import cos, cos_
 from .cosh import cosh, cosh_, cosh_out  # noqa: F401
 from .count_nonzero import count_nonzero
 from .cudnn_batch_norm_backward import cudnn_batch_norm_backward  # noqa: F401
+from .cudnn_batch_norm import cudnn_batch_norm  # noqa: F401
 from .cudnn_convolution import cudnn_convolution  # noqa: F401
 from .cummax import cummax
 from .cummin import cummin
@@ -206,6 +207,7 @@ from .erfinv_ import erfinv_  # noqa: F401
 from .exp import exp, exp_, exp_out
 from .exp2 import exp2, exp2_
 from .expm1 import expm1, expm1_, expm1_out
+from .expand_copy import expand_copy
 from .exponential_ import exponential_
 from .eye import eye
 from .eye_m import eye_m
@@ -279,6 +281,7 @@ from .le import le, le_, le_scalar
 from .leaky_relu import leaky_relu, leaky_relu_, leaky_relu_backward, leaky_relu_out
 from .lerp import lerp_scalar, lerp_scalar_, lerp_tensor, lerp_tensor_
 from .less_equal import less_equal, less_equal_scalar
+from .less_equal_ import less_equal_, less_equal_scalar_
 from .lgamma import lgamma, lgamma_
 from .lift_fresh import lift_fresh  # noqa: F401
 from .lift_fresh_copy import lift_fresh_copy
@@ -331,6 +334,7 @@ from .masked_scatter_backward import masked_scatter_backward
 from .masked_select import masked_select
 from .matmul_bf16 import matmul_bf16
 from .matmul_int8 import matmul_int8
+from .matmuladd import matmuladd
 from .max import max, max_dim
 from .max_pool2d_with_indices import (
     max_pool2d_backward,
@@ -549,7 +553,7 @@ from .square import square, square_, square_out
 from .squeeze_copy import squeeze_copy  # noqa: F401
 from .stack import stack
 from .std import std
-from .sub import sub, sub_, subtract_
+from .sub import sub, sub_, subtract, subtract_
 from .sum import sum, sum_dim, sum_dim_out, sum_out
 from .t_copy import t_copy, t_copy_out
 from .tan import tan, tan_
@@ -809,6 +813,7 @@ __all__ = [
     "exp",
     "exp2",
     "exp2_",
+    "expand_copy",
     "exp_",
     "exp_out",
     "expm1",
@@ -924,6 +929,8 @@ __all__ = [
     "lerp_tensor_",
     "less_equal",
     "less_equal_scalar",
+    "less_equal_",
+    "less_equal_scalar_",
     "lgamma",
     "lgamma_",
     "lift_fresh_copy",
@@ -988,6 +995,7 @@ __all__ = [
     "masked_select",
     "matmul_bf16",
     "matmul_int8",
+    "matmuladd",
     "max",
     "max_dim",
     "max_pool2d_backward",
@@ -1251,6 +1259,7 @@ __all__ = [
     "sub",
     "sub_",
     "subtract_",
+    "subtract",
     "sum",
     "sum_dim",
     "sum_dim_out",

@@ -26,6 +26,7 @@ from flag_gems.utils import libentry, tl_extra_shim
 from ._batch_norm_no_update import (
     BNNU_MAX_PROGRAMS,
     BNNU_TILE_S,
+    _batch_norm_no_update,
     _batch_norm_no_update_kernel,
 )
 
@@ -747,6 +748,15 @@ def batch_norm(
     # 3-stage path's normalize launch for large shapes. Training keeps the 3-stage
     # path below (unchanged).
     if not training:
+        # Fast path: channel-major wrapper (adaptive TILE_S + chunked-batch grid).
+        if running_mean is not None and running_var is not None and input.numel() > 0:
+            output, _, _, _ = _batch_norm_no_update(
+                input, weight, bias, running_mean, running_var, momentum, eps
+            )
+            feat_dim = input.shape[1] if input.ndim >= 2 else input.shape[0]
+            mean = torch.empty(feat_dim, device=input.device, dtype=input.dtype)
+            inv_std = torch.empty_like(mean)
+            return output, mean, inv_std
         input_3d = make_3d_for_bn(input)  # [N, C, S]
         if not input_3d.is_contiguous():
             input_3d = input_3d.contiguous()
