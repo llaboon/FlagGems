@@ -368,6 +368,7 @@ from .pairwise_distance import pairwise_distance
 from .per_token_group_quant_fp8 import SUPPORTED_FP8_DTYPE, per_token_group_quant_fp8
 from .permute_copy import permute_copy
 from .pixel_unshuffle import pixel_unshuffle, pixel_unshuffle_out
+from .pairwise_distance import pairwise_distance
 from .polar import polar
 from .polygamma import polygamma, polygamma_, polygamma_out
 from .pow import (
@@ -1019,6 +1020,8 @@ __all__ = [
     "permute_copy",
     "pixel_unshuffle",
     "pixel_unshuffle_out",
+    "permute_copy",
+    "pairwise_distance",
     "polar",
     "polygamma",
     "polygamma_",
