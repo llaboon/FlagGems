@@ -152,7 +152,7 @@ from .copy import copy, copy_
 from .copysign import copysign, copysign_out
 from .copysign_ import copysign_
 from .cos import cos, cos_
-from .cosh import cosh, cosh_, cosh_out  # noqa: F401
+from .cosh import cosh_out
 from .count_nonzero import count_nonzero
 from .cudnn_batch_norm_backward import cudnn_batch_norm_backward  # noqa: F401
 from .cudnn_convolution import cudnn_convolution  # noqa: F401
@@ -728,8 +728,6 @@ __all__ = [
     "copysign_out",
     "cos",
     "cos_",
-    "cosh",
-    "cosh_",
     "cosh_out",
     "count_nonzero",
     "cummax",
