@@ -34,11 +34,8 @@ from ._native_batch_norm_legit_functional import _native_batch_norm_legit_functi
 from ._thnn_fused_lstm_cell_backward_impl import _thnn_fused_lstm_cell_backward_impl
 from ._jagged_to_padded_dense_forward import _jagged_to_padded_dense_forward
 from .abs import abs, abs_
-from .absolute import absolute, absolute_
-from .acos import acos, acos_
-from .acosh import acosh, acosh_
-from .adaptive_avg_pool2d import adaptive_avg_pool2d
-from .adaptive_max_pool2d import adaptive_max_pool2d
+from .absolute import absolute
+from .acos import acos
 from .adaptive_max_pool2d_backward import adaptive_max_pool2d_backward
 from .add import add, add_
 from .add_relu import _add_relu, _add_relu_
@@ -131,7 +128,6 @@ from .cdist_backward import _cdist_backward
 from .ceil import ceil, ceil_, ceil_out
 from .celu import celu, celu_
 from .cholesky_inverse import cholesky_inverse
-from .cholesky_solve import cholesky_solve, cholesky_solve_out
 from .clamp import (
     clamp,
     clamp_,
@@ -605,12 +601,7 @@ __all__ = [
     "absolute",
     "absolute_",
     "acos",
-    "acos_",
-    "acosh",
-    "acosh_",
-    "adaptive_avg_pool2d",
-    "adaptive_max_pool2d",
-"adaptive_max_pool2d_backward",
+    "adaptive_max_pool2d_backward",
     "add",
     "add_",
     "add_relu",
@@ -718,8 +709,6 @@ __all__ = [
     "celu",
     "celu_",
     "cholesky_inverse",
-    "cholesky_solve",
-    "cholesky_solve_out",
     "clamp",
     "clamp_",
     "clamp_max",
