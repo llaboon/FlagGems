@@ -462,7 +462,7 @@ from .softmax import softmax, softmax_backward, softmax_backward_out, softmax_ou
 from .softplus import softplus, softplus_backward
 from .softshrink import softshrink, softshrink_out
 from .sort import sort, sort_stable
-from .special_legendre_polynomial_p import special_legendre_polynomial_p
+from .special_bessel_y1 import special_bessel_y1
 from .special_log_softmax import special_log_softmax
 from .special_logsumexp import special_logsumexp
 from .special_modified_bessel_k0 import (
@@ -577,7 +577,7 @@ __all__ = [
     "soft_margin_loss",
     "soft_margin_loss_out",
     "soft_margin_loss_backward",
-    "special_legendre_polynomial_p",
+    "special_bessel_y1",
     "special_log_softmax",
     "special_logsumexp",
     "softshrink",
