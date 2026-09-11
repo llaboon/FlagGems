@@ -57,6 +57,7 @@ from ._upsample_nearest_exact2d_backward import _upsample_nearest_exact2d_backwa
 from .abs import abs, abs_
 from .absolute import absolute, absolute_
 from .acos import acos, acos_
+from .acosh import acosh, acosh_
 from .adaptive_avg_pool2d import adaptive_avg_pool2d
 from .adaptive_max_pool2d import adaptive_max_pool2d
 from .absolute import absolute
@@ -697,6 +698,8 @@ __all__ = [
     "absolute_",
     "acos",
     "acos_",
+    "acosh",
+    "acosh_",
     "adaptive_avg_pool2d",
     "adaptive_max_pool2d",
     "adaptive_max_pool2d_backward",
