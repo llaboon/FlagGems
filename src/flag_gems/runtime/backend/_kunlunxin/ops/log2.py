@@ -1,27 +1,40 @@
-# Kunlunxin (XPU) override of log2 / log2_.
+# Copyright 2026 FlagOS Contributors
 #
-# log2 was NOT overridden by kunlunxin, so it fell to the generic KernelGen
-# ops/log2.py, whose kernel body is `tl.log2(x.to(tl.float32))`. On triton-XPU
-# the tl.log2 intrinsic is mis-lowered and the log2 conversion factor gets
-# dropped: the kernel computes natural log instead of log2,
-#     log2(2.0) -> 0.693147 (ln 2) instead of 1.0,
-# i.e. every result is off by exactly ln(2) (res/log(x) == 1.0, verified for
-# fp32/fp16/bf16 on [1024], [37,91], [2,19,7]; 36/36 test_log2 cases failed
-# with relative error ~0.307). Special values themselves are right
-# (0 -> -inf, -0 -> -inf, x<0 -> NaN, +inf -> +inf, NaN -> NaN).
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# Fix: compute log2 in terms of the (correct) tl.log intrinsic with an explicit
-# literal multiplier:
-#     log2(x) = log(x) * (1/ln 2) = log(x) * 1.4426950408889634
-# (exact same recipe as the sibling log1p.py: tuned CodeGenConfig +
-# isCloseVectorization=True, which is REQUIRED for the log family -- with
-# isCloseVectorization=False the vectorized log miscompiles bf16, ~1.6% of
-# elements off by exactly +ln(2), see log1p.py).
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
-# Both ("log2", log2) and ("log2_", log2_) are already present in the generic
-# _FULL_CONFIG, so registering these two functions here (and exporting them
-# from ops/__init__.py) is enough for SpecOpRegistrar to replace the generic
-# ones -- no _install_register_config_patch entry needed (unlike atanh_).
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Kunlunxin (XPU) override of aten.log2 (functional).
+#
+# Two independent defects fixed here relative to the generic flag_gems/ops/log2.py:
+#
+# 1) CORRECTNESS — tl.log2 is base-e on this XPU (returns ln(x), NOT log2(x)).
+#    This was isolated in the logaddexp2 fix (see _kunlunxin/ops/logaddexp2.py):
+#    on this backend `tl.log2(z)` returns ln(z). The generic op computes
+#    tl.log2(x.to(f32)), which therefore returns ln(x), off by an ln(2) factor
+#    (~99.8% mismatch, max rel ~0.31 vs an fp64 CPU reference). Rebuild the
+#    base-2 result from the natural-base primitive:
+#        log2(x) = ln(x) / ln(2) = ln(x) * 1.4426950408889634.
+#
+# 2) PERFORMANCE — the generic op decorates the kernel with the bare
+#    pointwise_dynamic (no CodeGenConfig), so on XPU it is specialized per shape
+#    -> per-shape recompile / IR explosion and discrete access. Baseline:
+#    fp16 [4096,4096] ~42ms vs ~0.18ms torch (speedup ~0.004). Fix = the standard
+#    memory-bound unary CodeGenConfig (kunlunAutoGrid=True, prefer_1d_tile,
+#    buffer_size_limit=4096, unroll_num=8) so the kernel is shape-independent,
+#    compiled once, and does contiguous block DMA. Mirrors acosh / log10_ / exp2.
+#
+# isCloseVectorization=False (vectorization OPEN) matching acosh/log10_: log2 =
+# log(x)*inv_ln2 is a transcendental kernel; the bf16 vectorized tl.log
+# miscompile seen with log1p's `1.0 + x` addend is absent here.
 import logging
 
 import triton
@@ -43,7 +56,7 @@ config_ = CodeGenConfig(
     True,
     prefer_1d_tile=True,
     buffer_size_limit=4096,
-    isCloseVectorization=True,
+    isCloseVectorization=False,
     kunlunAutoGrid=True,
     unroll_num=8,
 )
@@ -52,22 +65,10 @@ config_ = CodeGenConfig(
 @pointwise_dynamic(promotion_methods=[(0, "COMPLEX_TO_FLOAT")], config=config_)
 @triton.jit
 def log2_func(x):
-    # log2(x) = ln(x) * (1/ln 2), computed in fp32 for precision.
-    # NOTE: no trailing .to(x.dtype) on purpose -- the output tensor store
-    # performs the final conversion (sibling exp/arcsinh/atanh follow the
-    # same pattern).
+    # log2(x) = ln(x) / ln(2); tl.log2 is base-e on this backend, so use tl.log.
     return tl.log(x.to(tl.float32)) * 1.4426950408889634
 
 
-def log2(A, *, out=None):
-    logger.debug("GEMS_KUNLUNXIN LOG2 FORWARD")
-    if out is None:
-        return log2_func(A)
-    log2_func(A, out0=out)
-    return out
-
-
-def log2_(A):
-    logger.debug("GEMS_KUNLUNXIN LOG2 INPLACE")
-    log2_func(A, out0=A)
-    return A
+def log2(A):
+    logger.debug("GEMS_KUNLUNXIN LOG2")
+    return log2_func(A)
