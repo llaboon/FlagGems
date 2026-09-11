@@ -53,6 +53,7 @@ from .adaptive_avg_pool2d import adaptive_avg_pool2d
 from .adaptive_avg_pool2d_backward import _adaptive_avg_pool2d_backward
 from .adaptive_max_pool2d import adaptive_max_pool2d
 from .adaptive_max_pool2d_backward import adaptive_max_pool2d_backward
+from .acosh import acosh, acosh_
 from .add import add, add_
 from .add_relu import _add_relu, _add_relu_
 from .addcdiv import addcdiv, addcdiv_, addcdiv_out
@@ -655,6 +656,8 @@ __all__ = [
     "absolute_",
     "acos",
     "acos_",
+    "acosh",
+    "acosh_",
     "adaptive_avg_pool2d",
     "adaptive_max_pool2d",
     "adaptive_max_pool2d_backward",
