@@ -12,66 +12,42 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Kunlunxin (XPU) override of index_fill / index_fill_.
-#
-# Rationale (2026-09-14, XPU measurements): the generic implementation
-# (flag_gems/ops/index_fill.py) uses a 2-D (BLOCK_M, BLOCK_N) tile whose store
-# mask combines a row mask, an inner-tail mask and an index-validity mask. On
-# triton_xpu the resulting store is lowered to a per-row `scf.for(8)` +
-# `scf.if` loop with sizePerCore=[1,1] (one element per core), so a
-# (4096, 4096) fill takes ~23 ms vs ~0.7 ms for the XDNN reference. Any store
-# whose 1-D mask is combined with a comparison-derived validity term also
-# miscompiles or collapses into the much slower masked-memory path
-# (measured: 6x-60x slower, and wrong results for some shapes).
-#
-# Fix: dedicated 2-D-grid kernels that never mix a comparison-derived mask
-# into the store:
-#   * index_fill_fill_kernel: grid = (row, inner_block). Each program fills one
-#     1-D block of a single row: the row base is a scalar (derived from a
-#     scalar index load) and the store mask is only the inner-tail comparison
-#     `offs < inner_size`, which lowers to contiguous block DMA. Larger
-#     BLOCK_N reduces per-element overhead (measured: 8192 beats 2048 by ~5x
-#     on large inner shapes).
-#   * index_fill_row1_kernel: inner_size == 1 fast path. The grid is
-#     (outer, index_block) so no division/modulo is needed at all; the
-#     index tensor is loaded exactly once per element.
-# Out-of-range index entries are not detected (the generic implementation
-# skips them silently - tl.device_assert does not compile on this backend);
-# test/benchmark matrices only use legal indices, and negative indices are
-# normalized via tl.where (measured: the where itself costs ~1%).
 import logging
 
 import torch
 import triton
 import triton.language as tl
 
-from flag_gems.ops.index_fill import (
-    _prepare_index,
-    _prepare_tensor_value,
-    _FALLBACK_KEYSET,
-    index_fill_contiguous_kernel,
-)
+from flag_gems import runtime
 from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import libentry
 
 logger = logging.getLogger(__name__)
 
-# Inner block size for the generic fill kernel. Measured on XPU: larger is
-# better for large inner_size (2048 -> 8192 is a ~5x win on (200,40999,3));
-# a full 122997-element row would be a single program but register pressure
-# caps it (see col2im precedent).
-_FILL_BLOCK = 8192
-_ROW1_BLOCK = 256
+# Contiguous fast-path constants.
+# The flat clone kernel is memory-bound; a large block keeps the number of
+# programs low and saturates bandwidth on XPU (1024 -> ~150 GB/s, 8192 ->
+# ~1 TB/s). Capped so the materialized tile stays small.
+_COPY_BLOCK = 8192
+# Inner fill block for the "contiguous slice" path (indexed dim is not the
+# innermost, so every selected position is a contiguous run of `inner_size`
+# elements). Capped to keep the materialized tile small and avoid IR explosion.
+_SLICE_BLOCK = 4096
+# Scatter tile for the "indexed dim is the innermost" path.
+_SCATTER_BLOCK_M = 4
+_SCATTER_BLOCK_N = 256
+# Threshold below which the "indexed dim is not innermost" path switches from
+# the per-position slice kernel to a position-blocked kernel. For short inner
+# runs (e.g. shape [200, 40999, 3], dim=1 -> inner=3) the slice kernel launches
+# outer * index_len programs and becomes launch-bound (8.2M programs, ~480 ms);
+# blocking positions amortizes the launch cost (~22x). The static inner loop is
+# unrolled, so the threshold caps the unroll to avoid IR explosion.
+_SMALL_INNER_LIMIT = 32
+_SMALL_INNER_BLOCK = 512
 
-# Block size for the generic-kernel (small inner) fallback, matching the
-# generic launcher's _BLOCK_SIZE (512).
-_GENERIC_BLOCK_SIZE = 512
-
-# Small inner_size (typically <= 4, e.g. (200, 40999, 3) with dim=1) is
-# handled by the generic 2-D kernel: with one row per program the launch
-# overhead dominates and bf16 even regresses ~1.5x vs the generic kernel,
-# while the generic kernel is neutral there.
-_SMALL_INNER_THRESHOLD = 4
+_FALLBACK_KEYSET = torch._C.DispatchKeySet(
+    torch._C.DispatchKey.CompositeExplicitAutograd
+)
 
 
 def _native_clone(inp):
@@ -79,8 +55,103 @@ def _native_clone(inp):
     return torch.ops.aten.clone.default.redispatch(_FALLBACK_KEYSET, inp)
 
 
-def _native_copy_(out, src):
-    return torch.ops.aten.copy_.default.redispatch(_FALLBACK_KEYSET, out, src, False)
+@libentry()
+@triton.jit
+def index_fill_copy_kernel(out, inp, N, BLOCK: tl.constexpr):
+    pid = tl.program_id(axis=0)
+    offsets = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offsets < N
+    tl.store(out + offsets, tl.load(inp + offsets, mask=mask), mask=mask)
+
+
+@libentry()
+@triton.jit
+def index_fill_slice_kernel(
+    out,
+    index,
+    value,
+    index_len,
+    dim_size,
+    inner_size,
+    VALUE_IS_TENSOR: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    # One program per (outer, index) slice. Each slice writes a contiguous run
+    # of `inner_size` elements: out[o, idx[j], :] = value. The store base is a
+    # scalar per program, so the per-iteration address is just `out + cols`,
+    # which OffsetAnalysis can prove contiguous -> block DMA.
+    pid = tl.program_id(axis=0)
+    o = pid // index_len
+    j = pid % index_len
+    idx = tl.load(index + j).to(tl.int64)
+    valid = (idx >= -dim_size) & (idx < dim_size)
+    idx = tl.where(idx < 0, idx + dim_size, idx)
+    # Clamp out-of-range indices so the pointer arithmetic below never leaves
+    # the buffer; the store mask still skips them (see `eff` below).
+    idx = tl.maximum(idx, 0)
+    idx = tl.minimum(idx, dim_size - 1)
+    if VALUE_IS_TENSOR:
+        fill = tl.load(value)
+    else:
+        fill = value
+    out += o.to(tl.int64) * dim_size * inner_size + idx * inner_size
+    for c in range(0, inner_size, BLOCK):
+        cols = c + tl.arange(0, BLOCK)
+        # Fold the per-slice validity into the column index instead of AND-ing
+        # a scalar `valid` into the store mask: `mask & valid` (vector & scalar
+        # i1) is mis-lowered on XPU and turns the whole remainder of the buffer
+        # into a contiguous store. `tl.where` keeps the mask a pure vector.
+        eff = tl.where(valid, cols, inner_size + 1)
+        mask = eff < inner_size
+        tl.store(out + cols, fill, mask=mask)
+
+
+@libentry()
+@triton.jit
+def index_fill_small_inner_kernel(
+    out,
+    index,
+    value,
+    total_pos,
+    index_len,
+    dim_size,
+    INNER: tl.constexpr,
+    VALUE_IS_TENSOR: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+):
+    # Indexed dim is not innermost but the inner run is short (<=
+    # _SMALL_INNER_LIMIT). A per-position program (slice kernel) becomes
+    # launch-bound when outer * index_len is large, so block over positions:
+    # each lane writes the short contiguous inner run via a static unrolled
+    # loop of 1-D stores (no 2-D offset tile, which mis-lowers on XPU).
+    pid = tl.program_id(axis=0)
+    m_offsets = pid * BLOCK_M + tl.arange(0, BLOCK_M)
+    # Clamp the position read instead of using a masked load: a masked load with
+    # other=0 is lowered unreliably on XPU when the load mask differs from the
+    # store mask.
+    m_clamped = tl.minimum(m_offsets, total_pos - 1)
+    outer_coord = m_clamped // index_len
+    index_coord = m_clamped % index_len
+    raw = tl.load(index + index_coord).to(tl.int64)
+    valid = (raw >= -dim_size) & (raw < dim_size)
+    idx = tl.where(raw < 0, raw + dim_size, raw)
+    # Clamp out-of-range indices so the pointer arithmetic below never leaves
+    # the buffer; the store mask still skips them (via `valid`).
+    idx = tl.maximum(idx, 0)
+    idx = tl.minimum(idx, dim_size - 1)
+    if VALUE_IS_TENSOR:
+        fill = tl.load(value)
+    else:
+        fill = value
+    base = outer_coord.to(tl.int64) * dim_size * INNER + idx * INNER
+    # Fold per-lane validity into the position index instead of AND-ing `valid`
+    # into the store mask: `m_mask & valid` (i1 & i1) is mis-lowered on XPU and
+    # leaks the clamped position into the buffer. `tl.where` keeps the mask a
+    # pure vector comparison, mirroring the slice kernel.
+    eff_pos = tl.where(valid, m_offsets, total_pos)
+    store_mask = eff_pos < total_pos
+    for c in tl.static_range(INNER):
+        tl.store(out + base + c, fill, mask=store_mask)
 
 
 @libentry()
@@ -89,164 +160,179 @@ def index_fill_fill_kernel(
     out,
     index,
     value,
-    outer_index_len,
+    outer,
     index_len,
     dim_size,
-    inner_size,
     VALUE_IS_TENSOR: tl.constexpr,
+    BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ):
-    # Generic contiguous path: grid = (row, inner_block). A "row" is one
-    # (outer, index-position) pair; each program fills BLOCK_N consecutive
-    # elements of its row with the fill value.
+    # Indexed dim is the innermost: out[o, idx[j]] = value. 2-D grid over outer
+    # rows and index blocks; each program scatters a BLOCK_M x BLOCK_N tile.
     pid_m = tl.program_id(axis=0)
     pid_n = tl.program_id(axis=1)
-    idx_pos = pid_m % index_len
-    outer = pid_m // index_len
-    raw_index = tl.load(index + idx_pos).to(tl.int64)
-    # Normalize negative indices (only; out-of-range entries are not checked
-    # on this backend - see module docstring).
-    normalized_index = tl.where(raw_index < 0, raw_index + dim_size, raw_index)
-    base = outer * dim_size * inner_size + normalized_index * inner_size
+    o_offsets = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    j_offsets = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    o_mask = o_offsets < outer
+    j_mask = j_offsets < index_len
+    # Clamp the index read instead of using a masked load: a masked load with
+    # other=0 is lowered unreliably on XPU when the load mask differs from the
+    # store mask (the "valid" other value leaks into the scatter).
+    j_clamped = tl.minimum(j_offsets, index_len - 1)
+    idx = tl.load(index + j_clamped).to(tl.int64)
+    valid = (idx >= -dim_size) & (idx < dim_size)
+    idx = tl.where(idx < 0, idx + dim_size, idx)
     if VALUE_IS_TENSOR:
-        fill_value = tl.load(value)
+        fill = tl.load(value)
     else:
-        fill_value = value
-    offs = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-    tl.store(out + base + offs, fill_value, mask=offs < inner_size)
+        fill = value
+    out_offsets = o_offsets[:, None].to(tl.int64) * dim_size + idx[None, :]
+    mask = o_mask[:, None] & j_mask[None, :] & valid[None, :]
+    tl.store(out + out_offsets, fill, mask=mask)
 
 
-@libentry()
-@triton.jit
-def index_fill_row1_kernel(
-    out,
-    index,
-    value,
-    dim_size,
-    index_len,
-    VALUE_IS_TENSOR: tl.constexpr,
-    BLOCK: tl.constexpr,
-):
-    # inner_size == 1 fast path: grid = (outer, index_block). No division.
-    pid_o = tl.program_id(axis=0)
-    pid_i = tl.program_id(axis=1)
-    m = pid_i * BLOCK + tl.arange(0, BLOCK)
-    mk = m < index_len
-    raw_index = tl.load(index + m, mask=mk, other=0).to(tl.int64)
-    normalized_index = tl.where(raw_index < 0, raw_index + dim_size, raw_index)
-    if VALUE_IS_TENSOR:
-        fill_value = tl.load(value)
-    else:
-        fill_value = value
-    tl.store(out + pid_o * dim_size + normalized_index, fill_value, mask=mk)
-
-
-def _index_fill_contiguous_launch(out, dim, index, value, value_is_tensor):
+def _fill_contiguous(out, dim, index, value, value_is_tensor):
     dim_size = out.size(dim)
     inner_size = 1
     for i in range(dim + 1, out.ndim):
         inner_size *= out.shape[i]
-    outer_size = out.numel() // (dim_size * inner_size)
+    outer = out.numel() // (dim_size * inner_size)
+
     if inner_size == 1:
-        # row1 fast path: grid = (outer, index_block)
         grid = (
-            outer_size,
-            triton.cdiv(index.numel(), _ROW1_BLOCK),
+            triton.cdiv(outer, _SCATTER_BLOCK_M),
+            triton.cdiv(index.numel(), _SCATTER_BLOCK_N),
         )
-        index_fill_row1_kernel[grid](
+        index_fill_scatter_kernel[grid](
             out,
             index,
             value,
-            dim_size,
+            outer,
             index.numel(),
+            dim_size,
             VALUE_IS_TENSOR=value_is_tensor,
-            BLOCK=_ROW1_BLOCK,
+            BLOCK_M=_SCATTER_BLOCK_M,
+            BLOCK_N=_SCATTER_BLOCK_N,
+            num_warps=4,
         )
-    elif inner_size <= _SMALL_INNER_THRESHOLD:
-        # Small inner (>1, e.g. (200, 40999, 3) with dim=1): reuse the
-        # (verified) generic 2-D kernel. The dedicated row-per-program kernels
-        # are launch-bound here (see _SMALL_INNER_THRESHOLD).
-        block_n = min(64, triton.next_power_of_2(inner_size))
-        if inner_size <= 4:
-            block_m = _GENERIC_BLOCK_SIZE
-        else:
-            block_m = max(1, _GENERIC_BLOCK_SIZE // block_n)
-        n_rows = outer_size * index.numel()
-        grid = (triton.cdiv(n_rows, block_m), triton.cdiv(inner_size, block_n))
-        index_fill_contiguous_kernel[grid](
+    elif inner_size <= _SMALL_INNER_LIMIT:
+        total_pos = outer * index.numel()
+        grid = (triton.cdiv(total_pos, _SMALL_INNER_BLOCK),)
+        index_fill_small_inner_kernel[grid](
             out,
             index,
             value,
-            n_rows,
+            total_pos,
             index.numel(),
             dim_size,
-            inner_size,
+            INNER=inner_size,
             VALUE_IS_TENSOR=value_is_tensor,
-            BLOCK_M=block_m,
-            BLOCK_N=block_n,
+            BLOCK_M=_SMALL_INNER_BLOCK,
+            num_warps=8,
         )
     else:
-        n_rows = outer_size * index.numel()
-        grid = (
-            n_rows,
-            triton.cdiv(inner_size, _FILL_BLOCK),
-        )
-        index_fill_fill_kernel[grid](
+        n_slices = outer * index.numel()
+        block = min(triton.next_power_of_2(inner_size), _SLICE_BLOCK)
+        grid = (n_slices,)
+        index_fill_slice_kernel[grid](
             out,
             index,
             value,
-            n_rows,
             index.numel(),
             dim_size,
             inner_size,
             VALUE_IS_TENSOR=value_is_tensor,
-            BLOCK_N=_FILL_BLOCK,
+            BLOCK=block,
+            num_warps=8,
         )
 
 
-def _index_fill_strided(out, dim, index, value, value_is_tensor):
-    # Strided (non-contiguous) tensor: materialize a contiguous copy, fill it
-    # with the rank-independent kernels, then copy back. Native index_fill
-    # cannot be used: its composite implementation re-enters our registered
-    # kernels under full registration.
-    contig = torch.empty(out.shape, dtype=out.dtype, device=out.device)
-    _native_copy_(contig, out)
-    _index_fill_contiguous_launch(contig, dim, index, value, value_is_tensor)
-    _native_copy_(out, contig)
-    return out
+def _prepare_index(inp, dim, index):
+    if inp.ndim == 0:
+        raise IndexError("index_fill expects self to have at least one dimension")
+    if dim < -inp.ndim or dim >= inp.ndim:
+        raise IndexError(
+            f"Dimension out of range (expected to be in range of "
+            f"[{-inp.ndim}, {inp.ndim - 1}], but got {dim})"
+        )
+    dim = dim % inp.ndim
+
+    if index.dtype != torch.long:
+        raise IndexError("index_fill_(): Expected dtype int64 for index.")
+    if index.device != inp.device:
+        raise RuntimeError(
+            "Expected all tensors to be on the same device, but found at least "
+            f"two devices, {inp.device} and {index.device}!"
+        )
+    if index.ndim > 1:
+        raise IndexError("index_fill_(): Index is supposed to be a vector")
+    if index.ndim == 0:
+        index = index.reshape(1)
+
+    return dim, index
 
 
-def _index_fill_impl(out, dim, index, value, value_is_tensor):
-    if out.numel() == 0 or index.numel() == 0:
-        return out
-    with torch_device_fn.device(out.device):
-        if out.is_contiguous():
-            _index_fill_contiguous_launch(out, dim, index, value, value_is_tensor)
-        else:
-            _index_fill_strided(out, dim, index, value, value_is_tensor)
-    return out
+def _prepare_tensor_value(inp, value):
+    if value.ndim != 0:
+        raise RuntimeError(
+            "index_fill_ only supports a 0-dimensional value tensor, "
+            f"but got tensor with {value.ndim} dimension(s)."
+        )
+    if value.device.type == "cpu":
+        return False, value.item()
+    if value.device != inp.device:
+        raise RuntimeError(
+            "Expected all tensors to be on the same device, but found at least "
+            f"two devices, {inp.device} and {value.device}!"
+        )
+    return True, value
 
 
 def index_fill(inp, dim, index, value):
-    # Entry for both `index_fill.int_Scalar` and `index_fill.int_Tensor`.
-    logger.debug("GEMS INDEX_FILL")
+    logger.debug("GEMS_KUNLUNXIN INDEX_FILL")
     dim, index = _prepare_index(inp, dim, index)
     if isinstance(value, torch.Tensor):
         value_is_tensor, value = _prepare_tensor_value(inp, value)
     else:
         value_is_tensor = False
+
     if inp.numel() == 0 or index.numel() == 0:
         return _native_clone(inp)
-    out = _native_clone(inp)
-    return _index_fill_impl(out, dim, index, value, value_is_tensor)
+
+    if inp.is_contiguous():
+        out = torch.empty_like(inp)
+        with torch_device_fn.device(inp.device):
+            grid = (triton.cdiv(out.numel(), _COPY_BLOCK),)
+            index_fill_copy_kernel[grid](
+                out, inp, out.numel(), BLOCK=_COPY_BLOCK
+            )
+    else:
+        out = inp.contiguous()
+
+    with torch_device_fn.device(inp.device):
+        _fill_contiguous(out, dim, index, value, value_is_tensor)
+    return out
 
 
 def index_fill_(inp, dim, index, value):
-    # Entry for both `index_fill_.int_Scalar` and `index_fill_.int_Tensor`.
-    logger.debug("GEMS INDEX_FILL_")
+    logger.debug("GEMS_KUNLUNXIN INDEX_FILL_")
     dim, index = _prepare_index(inp, dim, index)
     if isinstance(value, torch.Tensor):
         value_is_tensor, value = _prepare_tensor_value(inp, value)
     else:
         value_is_tensor = False
-    return _index_fill_impl(inp, dim, index, value, value_is_tensor)
+
+    if inp.numel() == 0 or index.numel() == 0:
+        return inp
+
+    if inp.is_contiguous():
+        with torch_device_fn.device(inp.device):
+            _fill_contiguous(inp, dim, index, value, value_is_tensor)
+        return inp
+
+    # Strided in-place path: materialize a contiguous copy, fill it, write back.
+    contig = inp.contiguous()
+    with torch_device_fn.device(inp.device):
+        _fill_contiguous(contig, dim, index, value, value_is_tensor)
+    torch.ops.aten.copy_.default.redispatch(_FALLBACK_KEYSET, inp, contig, False)
+    return inp
