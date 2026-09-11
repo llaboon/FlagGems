@@ -275,9 +275,7 @@ from .linalg_householder_product import linalg_householder_product
 from .linspace import linspace
 from .log import log
 from .log1p import log1p, log1p_
-from .log2 import log2, log2_
-from .log10 import log10, log10_, log10_out  # noqa: F401
-from .log_ import log_  # noqa: F401
+from .log2 import log2
 from .log_sigmoid import log_sigmoid
 from .log_softmax import log_softmax, log_softmax_backward, log_softmax_backward_out
 from .logaddexp2 import logaddexp2, logaddexp2_out
@@ -888,7 +886,6 @@ __all__ = [
     "log1p",
     "log1p_",
     "log2",
-    "log2_",
     "log_sigmoid",
     "log_sigmoid_backward",
     "log_sigmoid_backward_out",
