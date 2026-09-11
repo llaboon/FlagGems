@@ -249,6 +249,7 @@ from .groupnorm import group_norm, group_norm_backward
 from .gt import gt, gt_scalar, gt_scalar_, gt_tensor_
 from .hadamard_transform import hadamard_transform
 from .hardsigmoid import hardsigmoid, hardsigmoid_out
+from .hardswish_ import hardswish_
 from .heaviside_ import heaviside_  # noqa: F401
 from .histc import histc
 from .hstack import hstack
@@ -891,6 +892,7 @@ __all__ = [
     "hadamard_transform",
     "hardsigmoid",
     "hardsigmoid_out",
+    "hardswish_",
     "histc",
     "hstack",
     "hypot",
