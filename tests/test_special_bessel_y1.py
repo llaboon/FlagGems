@@ -11,6 +11,8 @@ from . import accuracy_utils as utils
 # special.bessel_y1 only supports float32/float64; float16/bf16 raise RuntimeError
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 def test_special_bessel_y1(shape, dtype):
+    if dtype == torch.float64 and not utils.fp64_is_supported:
+        pytest.skip("fp64 is not supported on this device")
     inp = torch.randn(shape, dtype=dtype, device=flag_gems.device)
     ref_inp = utils.to_reference(inp, True)
 
