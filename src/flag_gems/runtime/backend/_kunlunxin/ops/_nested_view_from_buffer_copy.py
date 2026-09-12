@@ -23,14 +23,21 @@ logger = logging.getLogger("flag_gems." + __name__)
 # 嵌套张量后续读取（unbind / index）会直接段错误；因此 Kunlunxin 后端唯一可用
 # 的嵌套张量构造方式是 torch.nested 家族 API。
 #
-# 性能修复（相对默认 _metax 实现：逐组件 as_strided + clone + nested_tensor）：
-#   1. torch.nested.nested_tensor 在 use_gems 场景下内部多次触发 FlagGems 的
-#      cat/empty/copy override，稳态延迟约 0.7ms 且首个 shape 编译超 7ms+；
-#   2. 改用 empty_strided + aten._copy_from 完成一次整块拷贝快照（这两个原语
-#      FlagGems 均不 override，直达 vendor 拷贝引擎、无 Triton 首编译污染），
-#      再以 torch.nested.as_nested_tensor 视图组装嵌套张量（view 路径不经过
-#      被 override 的 cat），保持 _copy 的拷贝语义：use_gems 稳态约 0.4ms，
-#      无逐组件拷贝 launch。
+# 性能修复（相对上一版：empty_strided + _copy_from 快照 + as_nested_tensor 组装）：
+#   1. 上一版的 `torch.nested.as_nested_tensor` 内部走 `_nested_tensor_from_tensor_list`
+#      → `torch.cat`，而 `cat` 恰是被 FlagGems override 的算子：在 use_gems 下
+#      3 个不等长组件命中 cat.py 的通用 dim-0 路径（3 次 Triton copy launch），
+#      仅此一项即 ~0.2ms；加上 9 次 `.item()` 主机同步（~0.13ms），use_gems
+#      稳态 ~0.4ms；
+#   2. 改用 **jagged layout** 的 `_nested_view_from_values_offsets_lengths` 视图
+#      构造（`torch._nested_view_from_jagged`）：组件长度（lengths）显式传入，
+#      因此任意 offsets（含空洞/重叠）都直接映射到 `values[offsets[i]:+len_i]`，
+#      与参考语义一致。整个快速路径只使用不被 override 的原语
+#      （empty_strided / _copy_from / _nested_view_from_jagged），零主机同步、
+#      零 Triton launch，use_gems 与裸调用耗时相同（~0.22ms）。
+#   3. 限制：jagged 组件为连续（stride-1）1-D 视图，故仅当 self 为 1-D、
+#      nested_size 为 (N,1) int64、strides 全 1、offsets 为 int64 时走快速路径；
+#      其他情况回退到通用 `as_nested_tensor` 路径（保留任意 stride/维度语义）。
 def _nested_view_from_buffer_copy(
     self: torch.Tensor,
     nested_size: torch.Tensor,
@@ -38,13 +45,50 @@ def _nested_view_from_buffer_copy(
     offsets: torch.Tensor,
 ):
     logger.debug("GEMS_KUNLUNXIN _NESTED_VIEW_FROM_BUFFER_COPY")
+    num_components = nested_size.shape[0]
 
+    if (
+        self.dim() == 1
+        and nested_size.dim() == 2
+        and nested_size.shape[1] == 1
+        and nested_size.dtype == torch.int64
+        and nested_strides.dtype == torch.int64
+        and offsets.dtype == torch.int64
+        and all(s == 1 for s in nested_strides.reshape(-1).tolist())
+    ):
+        # One flat copy of the whole buffer (copy semantics of the op; the
+        # nested tensor then is a vi ew of `values`).
+        values = torch.empty_strided(
+            self.shape, self.stride(), dtype=self.dtype, device=self.device
+        )
+        torch.ops.aten._copy_from(self, values, False)
+        # Jagged offsets must have num_components+1 entries; with explicit
+        # `lengths` the trailing entry is not used for component sizes, so the
+        # input offsets (padded by one element) are passed through unchanged.
+        full_offsets = torch.empty_strided(
+            (num_components + 1,), (1,), dtype=torch.int64, device=self.device
+        )
+        torch.ops.aten._copy_from(offsets, full_offsets[:num_components], False)
+        torch.ops.aten._copy_from(offsets[:1], full_offsets[num_components:], False)
+        from torch.nested._internal.nested_tensor import (
+            nested_view_from_values_offsets_lengths,
+        )
+
+        return nested_view_from_values_offsets_lengths(
+            values,
+            full_offsets,
+            nested_size[:, 0],
+            ragged_idx=1,
+            min_seqlen=None,
+            max_seqlen=None,
+        )
+
+    # Generic fallback: per-component as_strided views of a snapshot copy.
     snapshot = torch.empty_strided(
         self.shape, self.stride(), dtype=self.dtype, device=self.device
     )
     torch.ops.aten._copy_from(self, snapshot, False)
 
-    num_components = nested_size.shape[0]
     components = []
     for i in range(num_components):
         size_i = int(nested_size[i].item())

@@ -518,6 +518,7 @@ from .special_digamma import special_digamma
 from .special_erfcx import special_erfcx
 from .special_erfinv import special_erfinv, special_erfinv_, special_erfinv_out
 from .special_exp2 import special_exp2
+from .special_expit import special_expit
 from .special_gammainc import special_gammainc
 from .special_gammaincc import special_gammaincc
 from .special_gammaln import special_gammaln, special_gammaln_out
@@ -534,6 +535,7 @@ from .special_modified_bessel_k0 import (
 )
 from .special_multigammaln import special_multigammaln
 from .special_ndtri import special_ndtri
+from .special_round import special_round, special_round_out
 from .special_shifted_chebyshev_polynomial_t import (
     special_shifted_chebyshev_polynomial_t,
 )
@@ -1227,6 +1229,7 @@ __all__ = [
     "special_erfinv_",
     "special_erfinv_out",
     "special_exp2",
+    "special_expit",
     "special_gammainc",
     "special_gammaincc",
     "special_gammaln",
@@ -1243,6 +1246,8 @@ __all__ = [
     "special_modified_bessel_k0_out",
     "special_multigammaln",
     "special_ndtri",
+    "special_round",
+    "special_round_out",
     "special_shifted_chebyshev_polynomial_t",
     "special_shifted_chebyshev_polynomial_u",
     "special_shifted_chebyshev_polynomial_u_",
