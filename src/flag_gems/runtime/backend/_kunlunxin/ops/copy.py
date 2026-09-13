@@ -72,8 +72,6 @@ def _can_use_triton(dst: torch.Tensor, src: torch.Tensor) -> bool:
         # can abort compiling those kernels (int->float family).
         return False
     return True
-        return False
-    return True
 
 
 def _expand_like(src: torch.Tensor, target_shape: torch.Size) -> torch.Tensor:
