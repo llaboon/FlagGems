@@ -17,31 +17,37 @@ def _fractional_max_pool2d_forward_kernel(
     output_ptr,
     indices_ptr,
     random_samples_ptr,
-    input_channels: tl.constexpr,
-    input_height: tl.constexpr,
-    input_width: tl.constexpr,
-    output_height: tl.constexpr,
-    output_width: tl.constexpr,
+    total,
+    input_height,
+    input_width,
+    output_height,
+    output_width,
     kernel_height: tl.constexpr,
     kernel_width: tl.constexpr,
     alpha_height,
     alpha_width,
+    BLOCK: tl.constexpr,
 ):
-    output_column = tl.program_id(0)
-    row_id = tl.program_id(1)
-    channel = tl.program_id(2)
-    batch = row_id // output_height
-    output_row = row_id % output_height
-    sample_offset = (batch * input_channels + channel) * 2
-    sample_height = tl.load(random_samples_ptr + sample_offset).to(tl.float32)
-    sample_width = tl.load(random_samples_ptr + sample_offset + 1).to(tl.float32)
+    offsets = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    output_mask = offsets < total
+    out_hw = output_height * output_width
+    nc_idx = offsets // out_hw
+    rem = offsets % out_hw
+    output_row = rem // output_width
+    output_column = rem % output_width
+    nc_safe = tl.where(output_mask, nc_idx, 0)
 
+    sample_height = tl.load(random_samples_ptr + nc_safe * 2).to(tl.float32)
+    sample_width = tl.load(random_samples_ptr + nc_safe * 2 + 1).to(tl.float32)
+
+    sample_alpha_h = (sample_height * alpha_height).to(tl.int32)
+    sample_alpha_w = (sample_width * alpha_width).to(tl.int32)
     start_height = ((output_row.to(tl.float32) + sample_height) * alpha_height).to(
         tl.int32
-    ) - (sample_height * alpha_height).to(tl.int32)
+    ) - sample_alpha_h
     start_width = ((output_column.to(tl.float32) + sample_width) * alpha_width).to(
         tl.int32
-    ) - (sample_width * alpha_width).to(tl.int32)
+    ) - sample_alpha_w
     start_height = tl.where(
         output_row == output_height - 1,
         input_height - kernel_height,
@@ -53,29 +59,36 @@ def _fractional_max_pool2d_forward_kernel(
         start_width,
     )
 
-    max_value = tl.full((), -float("inf"), tl.float32)
-    max_index = tl.full((), -1, tl.int64)
+    max_value = tl.full((BLOCK,), -float("inf"), tl.float32)
+    max_index = tl.full((BLOCK,), -1, tl.int64)
     for kernel_row in tl.static_range(0, kernel_height):
         for kernel_column in tl.static_range(0, kernel_width):
             input_row = start_height + kernel_row
             input_column = start_width + kernel_column
+            valid = output_mask & (input_row >= 0) & (input_row < input_height) & (
+                input_column >= 0
+            ) & (input_column < input_width)
+            input_row_safe = tl.where(valid, input_row, 0)
+            input_column_safe = tl.where(valid, input_column, 0)
             input_offset = (
-                (batch * input_channels + channel) * input_height + input_row
-            ) * input_width + input_column
-            value = tl.load(input_ptr + input_offset).to(tl.float32)
-            update = value > max_value
+                nc_safe * (input_height * input_width)
+                + input_row_safe * input_width
+                + input_column_safe
+            )
+            value = tl.load(
+                input_ptr + input_offset, mask=valid, other=-float("inf")
+            ).to(tl.float32)
+            value = tl.where(valid, value, -float("inf"))
+            update = valid & (value > max_value)
             max_value = tl.where(update, value, max_value)
             max_index = tl.where(
                 update,
-                input_row * input_width + input_column,
+                input_row_safe * input_width + input_column_safe,
                 max_index,
             )
 
-    output_offset = (
-        (batch * input_channels + channel) * output_height + output_row
-    ) * output_width + output_column
-    tl.store(output_ptr + output_offset, max_value)
-    tl.store(indices_ptr + output_offset, max_index)
+    tl.store(output_ptr + offsets, max_value, mask=output_mask)
+    tl.store(indices_ptr + offsets, max_index, mask=output_mask)
 
 
 @libentry()
@@ -161,7 +174,7 @@ def fractional_max_pool2d(
         )
     else:
         assert _random_samples.shape == (batch_size, channels, 2)
-        _random_samples = _random_samples.to(dtype=input.dtype).contiguous()
+        _random_samples = _random_samples.to(dtype=torch.float32).contiguous()
 
     output = torch.empty(
         (batch_size, channels, output_height, output_width),
@@ -181,14 +194,16 @@ def fractional_max_pool2d(
     alpha_width = (
         (input_width - kernel_width) / (output_width - 1) if output_width > 1 else 0.0
     )
-    grid = (output_width, batch_size * output_height, channels)
+    total = output.numel()
+    block = 1024
+    grid = (triton.cdiv(total, block),)
     with torch_device_fn.device(input.device):
         _fractional_max_pool2d_forward_kernel[grid](
             input,
             output,
             indices,
             _random_samples.reshape(batch_size * channels, 2),
-            channels,
+            total,
             input_height,
             input_width,
             output_height,
@@ -197,6 +212,8 @@ def fractional_max_pool2d(
             kernel_width,
             alpha_height,
             alpha_width,
+            block,
+            num_warps=1,
             isCloseVectorization=True,
             buffer_size_limit=2048,
         )
