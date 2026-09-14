@@ -83,6 +83,7 @@ from .arccos import arccos, arccos_
 from .arccosh import arccosh_  # noqa: F401
 from .arcsin import arcsin, arcsin_, arcsin_out
 from .arcsinh import arcsinh, arcsinh_, arcsinh_out  # noqa: F401
+from .arcsinh import arcsinh, arcsinh_, arcsinh_out
 from .arctan import arctan, arctan_
 from .arctan2 import arctan2, arctan2_
 from .argmax import argmax
@@ -95,6 +96,7 @@ from .assert_async import _assert_async
 from .atan import atan, atan_
 from .atan2 import atan2, atan2_, atan2_out
 from .atanh import atanh, atanh_  # noqa: F401
+from .atanh import atanh, atanh_, atanh_out
 from .attention import (  # noqa: F401
     ScaleDotProductAttention,
     flash_attention_forward,
@@ -178,6 +180,7 @@ from .copy import copy, copy_
 from .copysign import copysign, copysign_, copysign_out
 from .cos import cos, cos_
 from .cosh import cosh, cosh_, cosh_out  # noqa: F401
+from .cosh import cosh, cosh_, cosh_out
 from .count_nonzero import count_nonzero
 from .cudnn_batch_norm_backward import cudnn_batch_norm_backward  # noqa: F401
 from .cudnn_convolution import cudnn_convolution  # noqa: F401
@@ -725,6 +728,9 @@ __all__ = [
     "arcsin",
     "arcsin_",
     "arcsin_out",
+    "arcsinh",
+    "arcsinh_",
+    "arcsinh_out",
     "arctan",
     "arctan2",
     "arctan2_",
@@ -742,6 +748,9 @@ __all__ = [
     "atan2_",
     "atan2_out",
     "atan_",
+    "atanh",
+    "atanh_",
+    "atanh_out",
     "avg_pool2d",
     "avg_pool2d_backward",
     "avg_pool3d",
@@ -817,6 +826,9 @@ __all__ = [
     "copysign_out",
     "cos",
     "cos_",
+    "cosh",
+    "cosh_",
+    "cosh_out",
     "count_nonzero",
     "cummax",
     "cummin",
