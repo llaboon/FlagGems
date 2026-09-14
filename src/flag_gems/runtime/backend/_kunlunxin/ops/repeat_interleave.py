@@ -1,3 +1,17 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import logging
 
 import torch
@@ -190,48 +204,61 @@ def repeat_interleave_tensor(repeats, *, output_size=None):
 
 
 @triton.jit
-def repeat_interleave_self_tensor_kernel(
-    inp,
-    out,
-    cumsum,
-    repeats,
-    D,
-    outer,
-    rsum,
-    inner,
-    BLOCK_I: tl.constexpr,
+def repeat_interleave_self_tensor_bcast_kernel(
+    inp_ptr,
+    rep_ptr,
+    cum_ptr,
+    out_ptr,
+    DIM_SIZE,
+    IDX_TOTAL,
+    INNER,
+    BLOCK: tl.constexpr,
     NEED_MASK: tl.constexpr,
 ):
-    # Input-side decomposition: one program handles one input row (o, i).
-    # The row is loaded ONCE and stored r_i times to the r_i consecutive
-    # output rows [start, start + r_i); start = cumsum[i] - r_i. This
-    # replaces the index-materialize + gather approach: the store side is
-    # moved r_i times anyway, but the LOAD side is done once per input row
-    # (outer*D loads of `inner` instead of rsum loads), and building the
-    # mapping needs only cumsum (no index tensor, no .item() sync beyond
-    # the single rsum host read).
-    pid = ext.program_id(axis=0)
-    if pid < outer * D:
-        o = pid // D
-        i = pid % D
-        r = tl.load(repeats + i)
-        tl.device_assert(r >= 0, "repeats can not be negative")
-        start = tl.load(cumsum + i) - r
-        base_in = pid * inner
-        base_out = (o * rsum + start) * inner
-        if NEED_MASK:
-            for c in range(0, inner, BLOCK_I):
-                cols = c + tl.arange(0, BLOCK_I)
-                m = cols < inner
-                v = tl.load(inp + base_in + cols, mask=m, other=0)
-                for rep in range(0, r):
-                    tl.store(out + base_out + rep * inner + cols, v, mask=m)
-        else:
-            for c in range(0, inner, BLOCK_I):
-                cols = c + tl.arange(0, BLOCK_I)
-                v = tl.load(inp + base_in + cols)
-                for rep in range(0, r):
-                    tl.store(out + base_out + rep * inner + cols, v)
+    # Load-once-store-k: one program handles one BLOCK-element chunk of one
+    # input row (o, j) and writes its k = repeats[j] copies to the k
+    # consecutive output rows. The input chunk is read exactly once instead of
+    # once per output row (the per-output-row copy kernel re-reads it k times
+    # on average, wasting read bandwidth for the common k > 1 case).
+    j = ext.program_id(0)
+    o = ext.program_id(1)
+    c = ext.program_id(2)
+    k = tl.load(rep_ptr + j).to(tl.int32)
+    col = c * BLOCK + tl.arange(0, BLOCK)
+    in_off = (o * DIM_SIZE + j).to(tl.int64) * INNER + col
+    start = (tl.load(cum_ptr + j) - k).to(tl.int64) + o.to(tl.int64) * IDX_TOTAL
+    if NEED_MASK:
+        mask = col < INNER
+        vals = tl.load(inp_ptr + in_off, mask=mask, other=0)
+        for t in range(0, k):
+            tl.store(out_ptr + (start + t) * INNER + col, vals, mask=mask)
+    else:
+        vals = tl.load(inp_ptr + in_off)
+        for t in range(0, k):
+            tl.store(out_ptr + (start + t) * INNER + col, vals)
+
+
+@triton.jit
+def repeat_interleave_self_tensor_gather_kernel(
+    inp_ptr,
+    index_ptr,
+    out_ptr,
+    IDX_TOTAL,
+    DIM_SIZE,
+    TOTAL_ROWS,
+    BLOCK: tl.constexpr,
+):
+    # inner == 1 fast path: each output element is a scalar gather
+    # out[o * IDX_TOTAL + j] = inp[o * DIM_SIZE + index[j]]
+    pid = ext.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < TOTAL_ROWS
+    r = offs
+    j = r % IDX_TOTAL
+    o = r // IDX_TOTAL
+    src = tl.load(index_ptr + j, mask=mask, other=0)
+    vals = tl.load(inp_ptr + (o * DIM_SIZE + src).to(tl.int64), mask=mask, other=0)
+    tl.store(out_ptr + r.to(tl.int64), vals, mask=mask)
 
 
 def repeat_interleave_self_tensor(inp, repeats, dim=None, *, output_size=None):
@@ -267,45 +294,60 @@ def repeat_interleave_self_tensor(inp, repeats, dim=None, *, output_size=None):
             )
         )
 
-    repeats = repeats.contiguous()
-    inp = inp.contiguous()
-    D = inp_shape[dim]
+    cumsum = repeats.cumsum(axis=0)
+    idx_total = int(cumsum[-1].item())
+
     outer = 1
-    inner = 1
     for s in inp_shape[:dim]:
         outer *= s
+    inner = 1
     for s in inp_shape[dim + 1 :]:
         inner *= s
 
-    if inner == 1:
-        # Indexed dim is the innermost: genuine per-element gather. Fall back
-        # to the index-select path (materialized index + vendor index_select).
-        indices = repeat_interleave_tensor(repeats)
-        return torch.index_select(inp, dim, indices)
-
-    cumsum = repeats.cumsum(axis=0)
-    rsum = int(cumsum[-1].item())
-    out_shape = inp_shape[:dim] + [rsum] + inp_shape[dim + 1 :]
+    inp = inp.contiguous()
+    out_shape = inp_shape[:dim] + [idx_total] + inp_shape[dim + 1 :]
     out = torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
 
-    # BLOCK_I: cap at 4096 (measured sweet spot on XPU); floor at 64 (narrow
-    # vector stores below 64 elements per instruction are unreliable in
-    # TritonXPU; masked path covers inner < 64).
-    block_i = min(max(triton.next_power_of_2(inner), 64), 4096)
-    need_mask = inner % block_i != 0
-    grid = (outer * D,)
-    repeat_interleave_self_tensor_kernel[grid](
+    total_rows = outer * idx_total
+    if total_rows == 0 or inner == 0:
+        return out
+
+    if inner == 1:
+        # inner == 1 fast path: flat scalar gather, one BLOCK per program.
+        indices = repeat_interleave_tensor(repeats)
+        indices = indices.contiguous()
+        BLOCK = 1024
+        grid = (triton.cdiv(total_rows, BLOCK),)
+        repeat_interleave_self_tensor_gather_kernel[grid](
+            inp,
+            indices,
+            out,
+            idx_total,
+            inp_shape[dim],
+            total_rows,
+            BLOCK=BLOCK,
+            num_warps=4,
+        )
+        return out
+
+    # inner > 1: load-once-store-k. Each program reads one contiguous chunk of
+    # one input row exactly once and stores its k = repeats[j] copies to the k
+    # consecutive output rows (grid decomposed as (input row, outer, chunk)).
+    block = min(triton.next_power_of_2(inner), 32768)
+    chunks = triton.cdiv(inner, block)
+    need_mask = (inner % block) != 0
+    grid = (inp_shape[dim], outer, chunks)
+    repeat_interleave_self_tensor_bcast_kernel[grid](
         inp,
-        out,
-        cumsum,
         repeats,
-        D,
-        outer,
-        rsum,
+        cumsum,
+        out,
+        inp_shape[dim],
+        idx_total,
         inner,
-        BLOCK_I=block_i,
+        BLOCK=block,
         NEED_MASK=need_mask,
-        num_warps=8,
-        buffer_size_limit=4096,
+        num_warps=8 if block >= 4096 else 4,
+        buffer_size_limit=8192 if block >= 8192 else 2048,
     )
     return out

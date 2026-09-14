@@ -18,7 +18,13 @@ config_ = CodeGenConfig(
     # tl.log with vectorization ON crashes the XPU ELF compiler (make_elf
     # Aborted); the proven tl.log recipe (see log1p.py) closes vectorization.
     isCloseVectorization=True,
-    kunlunAutoGrid=True,
+    # kunlunAutoGrid=True pins every pointwise shape with sum(shape) <=
+    # 2048*64 to a single XPU CTA (see pointwise_dynamic gen_task_partition_1d).
+    # xlogy benchmark shapes such as [4096,4096] (16M elements) and
+    # [10000,65536] (655M elements) all fall in that bucket and were measured
+    # 3-4x slower than an explicit 12-CTA grid; fixed 12 CTAs match it on the
+    # remaining large shapes (same recipe as special_erfc).
+    kunlunAutoGrid=False,
     unroll_num=8,
 )
 
@@ -27,18 +33,12 @@ config_ = CodeGenConfig(
 def _xlogy_compute(x, y):
     # Follows PyTorch aten semantics (in this precedence):
     #   NaN if y is NaN; 0 if x == 0; otherwise x * log(y)
-    #
-    # XPU-tuned form (measured, 2026-09-14): the naive two-`tl.where` form
-    #   res = where(x==0, 0, x*log(y)); return where(y!=y, NaN, res)
-    # costs +11% (fp16/bf16) / +2% (fp32) more than folding the x==0 case into
-    # the log argument: y_adj = where((x==0) & (y==y), 1.0, y).  For x==0 the
-    # log then sees a finite positive (1.0) so 0*log = 0 exactly; for y == NaN
-    # the (y==y) guard keeps y_adj = NaN so x*log(NaN) = NaN propagates; for
-    # all other (x, y) the expression is exactly x*log(y).
     x_f32 = x.to(tl.float32)
     y_f32 = y.to(tl.float32)
-    y_adj = tl.where((x_f32 == 0.0) & (y_f32 == y_f32), 1.0, y_f32)
-    return x_f32 * tl.log(y_adj)
+    y_is_nan = y_f32 != y_f32
+    prod = x_f32 * tl.log(y_f32)
+    res = tl.where(x_f32 == 0.0, 0.0, prod)
+    return tl.where(y_is_nan, float("nan"), res)
 
 
 @pointwise_dynamic(
@@ -102,3 +102,22 @@ def xlogy_scalar_tensor_out(self, other, out):
     logger.debug("GEMS_KUNLUNXIN XLOGY_SCALAR_TENSOR_OUT")
     xlogy_func_scalar_tensor(self, other, out0=out)
     return out
+
+
+# In-place overloads. Without these vendor exports the registered
+# ("xlogy_.Tensor", xlogy_) / ("xlogy_.Scalar_Other", xlogy_tensor_scalar_)
+# entries in flag_gems/__init__.py keep binding the *generic*
+# flag_gems.ops.xlogy_ wrappers, whose by-value import of the untuned
+# flag_gems.ops.xlogy.xlogy_func never sees the vendor replacement
+# (same SpecOpRegistrar name-based dispatch gap as divide, 2026-09-09).
+# Measured on the xlogy_ comprehensive benchmark before this fix: 16M fp32
+# elements took ~48.7 ms in gems (~0.7 GB/s, speedup 0.005) because the
+# generic codegen carries no XPU tuning.
+def xlogy_(self, other):
+    logger.debug("GEMS_KUNLUNXIN XLOGY_")
+    return xlogy_func(self, other, out0=self)
+
+
+def xlogy_tensor_scalar_(self, other):
+    logger.debug("GEMS_KUNLUNXIN XLOGY_TENSOR_SCALAR_")
+    return xlogy_func_tensor_scalar(self, other, out0=self)

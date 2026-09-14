@@ -1,4 +1,4 @@
-# Copyright 2026, The FlagOS Contributors.
+# Copyright 2026 FlagOS Contributors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,26 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# Kunlunxin (XPU) specialization for _jagged_to_padded_dense_forward.
 #
-# Kunlunxin (XPU) override of aten::_jagged_to_padded_dense_forward.
-#
-# The generic kernel (src/flag_gems/ops/_jagged_to_padded_dense_forward.py)
-# writes the output TWICE: first it fills the entire row with the padding
-# value, then it overwrites [0, seq_length) with the gathered values.  On XPU
-# that doubles global store traffic, which is the dominant cost of this
-# gather/scatter-shaped op.
-#
-# This override writes every output element exactly once with two disjoint
-# store streams per row:
-#   * a "copy" stream: masked load of values[seq_start : seq_end] and a store
-#     whose mask is the *same* predicate (the XPU backend fuses a masked load
-#     into the following masked store and only honors one mask; identical
-#     predicates make the fusion correct), and
-#   * a "tail pad" stream: pure constant store of the padding value over
-#     [seq_length : max_length) (no load feeds it, so it cannot be merged with
-#     the copy stream).
-# BLOCK_SIZE=256 makes the common shapes (max_length <= 256) use a single
-# iteration per stream, which measured fastest on XPU.
+# Kernel body is kept structurally identical to the proven generic
+# implementation (padding-fill loop + masked-load copy loop). The only change
+# is the launch BLOCK_SIZE: sized to next_power_of_2(max_length) (capped at
+# 256) so each row is covered by whole blocks without half-empty 128-lane
+# masked blocks for small max_lengths.
 import logging
 
 import torch
@@ -54,57 +41,44 @@ def _jagged_to_padded_dense_forward_kernel(
     max_length: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
-    """Kernel for converting jagged tensor to padded dense tensor.
-
-    Args:
-        values: 1D tensor containing concatenated variable-length sequences
-        offsets: 1D tensor of start positions for each sequence
-        output: 2D output tensor of shape (batch_size, max_length)
-        padding_value: scalar value for padding
-        batch_size: number of sequences
-        max_length: maximum length of each sequence
-    """
     pid = tle.program_id(axis=0)
-    if pid >= batch_size:
+    batch_idx = pid
+
+    if batch_idx >= batch_size:
         return
 
     # Get the start and end offset for this sequence
-    seq_start = tl.load(offsets + pid)
-    seq_end = tl.load(offsets + pid + 1)
+    seq_start = tl.load(offsets + batch_idx)
+    seq_end = tl.load(offsets + batch_idx + 1)
+
+    # Calculate the actual sequence length
     seq_length = seq_end - seq_start
 
-    row_offset = pid * max_length
+    # Compute the row offset in the output
+    row_offset = batch_idx * max_length
 
-    # Copy actual values (vectorized per block).  Since seq_length <=
-    # max_length, the store mask below is exactly the load mask, which keeps
-    # the XPU backend's load/store fusion correct.
+    # Fill with padding value (vectorized per block)
+    for j in tl.range(0, max_length, BLOCK_SIZE):
+        out_offsets = row_offset + j + tl.arange(0, BLOCK_SIZE)
+        out_mask = (j + tl.arange(0, BLOCK_SIZE)) < max_length
+        tl.store(output + out_offsets, padding_value, mask=out_mask)
+
+    # Copy actual values (vectorized per block)
     for j in tl.range(0, seq_length, BLOCK_SIZE):
         offsets_vec = seq_start + j + tl.arange(0, BLOCK_SIZE)
         mask = offsets_vec < seq_end
 
         values_vec = tl.load(values + offsets_vec, mask=mask, other=padding_value)
-        tl.store(output + row_offset + j + tl.arange(0, BLOCK_SIZE), values_vec, mask=mask)
 
-    # Fill the tail [seq_length, max_length) with the padding value.  This is
-    # a constant store with no feeding load, so it stays a separate store
-    # stream and the output is written exactly once in total.
-    tail = max_length - seq_length
-    for j in tl.range(0, tail, BLOCK_SIZE):
-        tail_offsets = seq_length + j + tl.arange(0, BLOCK_SIZE)
-        tail_mask = tail_offsets < max_length
-        tl.store(
-            output + row_offset + tail_offsets, padding_value, mask=tail_mask
-        )
+        out_offsets = row_offset + j + tl.arange(0, BLOCK_SIZE)
+        out_mask = (j + tl.arange(0, BLOCK_SIZE)) < seq_length
+
+        tl.store(output + out_offsets, values_vec, mask=out_mask)
 
 
 def _jagged_to_padded_dense_forward(values, offsets, max_lengths, padding_value=0.0):
-    """Convert a jagged (variable-length) tensor to a padded dense tensor.
-
-    Args:
-        values: 1D tensor containing concatenated variable-length sequences
-        offsets: List of 1D tensors containing start positions for each sequence
-        max_lengths: List of integers specifying maximum length for each batch dimension
-        padding_value: Value to use for padding (default: 0.0)
+    """Convert a jagged (variable-length) tensor to a padded dense tensor."""
+    logger.debug("GEMS JAGGED TO PADDED DENSE FORWARD")
 
     Returns:
         Padded dense tensor
@@ -140,9 +114,14 @@ def _jagged_to_padded_dense_forward(values, offsets, max_lengths, padding_value=
         padding_value,
         batch_size,
         max_length,
-        # BLOCK_SIZE=256: single iteration for the common max_length <= 256
-        # shapes and the fastest measured configuration on XPU.
-        BLOCK_SIZE=256,
+        # Two-tier block sizing (measured on P800):
+        #  - max_length <= 128: keep the generic 128 (best for small rows;
+        #    smaller blocks measurably regress, e.g. max_length=64 with 64
+        #    lanes is ~1.6x slower);
+        #  - max_length > 128: one whole-row block up to 256 lanes so the
+        #    fill/copy loops run a single iteration instead of two (e.g.
+        #    batch=512/max_length=256: 0.364 -> 0.244 ms fp16).
+        BLOCK_SIZE=128 if max_length <= 128 else min(triton.next_power_of_2(max_length), 256),
     )
 
     return output
