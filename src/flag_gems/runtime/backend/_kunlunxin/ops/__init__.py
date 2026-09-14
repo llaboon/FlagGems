@@ -30,6 +30,8 @@ from ._functional_sym_constrain_range_for_size import (
 from ._fused_adam import _fused_adam, _fused_adam_
 from ._fused_rms_norm import _fused_rms_norm  # noqa: F401
 from ._is_all_true import _is_all_true
+from ._jagged_to_padded_dense_forward import _jagged_to_padded_dense_forward
+from ._linalg_eigvals import _linalg_eigvals
 from ._native_batch_norm_legit_functional import _native_batch_norm_legit_functional
 from ._native_batch_norm_legit_no_training import _native_batch_norm_legit_no_training
 from ._nested_view_from_buffer_copy import _nested_view_from_buffer_copy
@@ -185,6 +187,7 @@ from .diff import diff
 from .digamma import digamma
 from .digamma_ import digamma_
 from .div import (
+    divide,
     div_mode,
     div_mode_,
     floor_divide,
@@ -195,6 +198,7 @@ from .div import (
     true_divide_,
     true_divide_out,
     true_divide_tensor,
+    true_divide_tensor_,
 )
 from .dot import dot
 from .dropout import dropout, dropout_backward
@@ -207,6 +211,7 @@ from .erfinv_ import erfinv_  # noqa: F401
 from .exp import exp, exp_, exp_out
 from .exp2 import exp2, exp2_
 from .expm1 import expm1, expm1_, expm1_out
+from .exponential import exponential
 from .exponential_ import exponential_
 from .eye import eye
 from .eye_m import eye_m
@@ -234,7 +239,8 @@ from .fused_experts_impl import (
     outplace_fused_experts,
 )
 from .gather import gather, gather_backward
-from .gcd import gcd, gcd_, gcd_out
+from .gcd import gcd, gcd_out
+from .gcd_ import gcd_
 from .ge import ge, ge_scalar, greater_equal_
 from .gelu import gelu, gelu_, gelu_backward
 from .geometric import geometric, geometric_  # noqa: F401
@@ -517,6 +523,7 @@ from .special_chebyshev_polynomial_w import (
     special_chebyshev_polynomial_w_out,
 )
 from .special_digamma import special_digamma
+from .special_erfc import special_erfc
 from .special_erfcx import special_erfcx
 from .special_erfinv import special_erfinv, special_erfinv_, special_erfinv_out
 from .special_exp2 import special_exp2
@@ -526,7 +533,7 @@ from .special_gammaln import special_gammaln, special_gammaln_out
 from .special_i0e import special_i0e, special_i0e_out
 from .special_i1 import special_i1, special_i1_out  # noqa: F401
 from .special_legendre_polynomial_p import special_legendre_polynomial_p
-from .special_log1p import special_log1p_out
+from .special_log1p import special_log1p, special_log1p_out
 from .special_log_ndtr import special_log_ndtr, special_log_ndtr_
 from .special_log_softmax import special_log_softmax
 from .special_logsumexp import special_logsumexp
@@ -593,6 +600,8 @@ from .weight_norm import _weight_norm
 from .weightnorm import weight_norm_interface, weight_norm_interface_backward
 from .where import where_scalar_other, where_scalar_self, where_self, where_self_out
 from .xlogy import (
+    xlogy_,
+    xlogy_tensor_scalar_,
     xlogy,
     xlogy_out,
     xlogy_scalar_tensor,
@@ -1290,6 +1299,12 @@ __all__ = [
     "sum_dim_out",
     "sum_out",
     "SUPPORTED_FP8_DTYPE",
+    "_jagged_to_padded_dense_forward",
+    "_linalg_eigvals",
+    "divide",
+    "exponential",
+    "special_erfc",
+    "special_log1p",
     "t_copy",
     "t_copy_out",
     "tan",
@@ -1314,6 +1329,7 @@ __all__ = [
     "true_divide_",
     "true_divide_out",
     "true_divide_tensor",
+    "true_divide_tensor_",
     "trunc",
     "trunc_",
     "unfold_copy",
@@ -1341,10 +1357,12 @@ __all__ = [
     "where_self",
     "where_self_out",
     "xlogy",
+    "xlogy_",
     "xlogy_out",
     "xlogy_scalar_tensor",
     "xlogy_scalar_tensor_out",
     "xlogy_tensor_scalar",
+    "xlogy_tensor_scalar_",
     "xlogy_tensor_scalar_out",
     "xor",
     "xor_",
