@@ -58,7 +58,7 @@ from .arange import arange, arange_start
 from .arccos import arccos, arccos_
 from .arccosh import arccosh_  # noqa: F401
 from .arcsin import arcsin, arcsin_, arcsin_out
-from .arcsinh import arcsinh, arcsinh_, arcsinh_out  # noqa: F401
+from .arcsinh import arcsinh, arcsinh_, arcsinh_out
 from .arctan import arctan, arctan_
 from .arctan2 import arctan2, arctan2_
 from .argmax import argmax
@@ -69,9 +69,8 @@ from .as_strided_scatter import as_strided_scatter
 from .asin import asin, asin_
 from .assert_async import _assert_async
 from .atan import atan, atan_
-from .atan2 import atan2, atan2_, atan2_out
-from .atanh import atanh, atanh_  # noqa: F401
-from .attention import (  # noqa: F401
+from .atanh import atanh, atanh_, atanh_out
+from .attention import (
     ScaleDotProductAttention,
     flash_attention_forward,
     flash_attn_varlen_func,
@@ -152,7 +151,7 @@ from .copy import copy, copy_
 from .copysign import copysign, copysign_out
 from .copysign_ import copysign_
 from .cos import cos, cos_
-from .cosh import cosh_out
+from .cosh import cosh, cosh_, cosh_out
 from .count_nonzero import count_nonzero
 from .cudnn_batch_norm_backward import cudnn_batch_norm_backward  # noqa: F401
 from .cudnn_convolution import cudnn_convolution  # noqa: F401
@@ -276,7 +275,7 @@ from .linspace import linspace
 from .log import log
 from .log10 import log10_, log10_out
 from .log1p import log1p, log1p_
-from .log2 import log2
+from .log2 import log2, log2_
 from .log_sigmoid import log_sigmoid
 from .log_softmax import log_softmax, log_softmax_backward, log_softmax_backward_out
 from .logaddexp2 import logaddexp2, logaddexp2_out
@@ -654,6 +653,7 @@ __all__ = [
     "atan_",
     "atanh",
     "atanh_",
+    "atanh_out",
     "avg_pool2d",
     "avg_pool2d_backward",
     "avg_pool3d",
@@ -727,6 +727,8 @@ __all__ = [
     "copysign_out",
     "cos",
     "cos_",
+    "cosh",
+    "cosh_",
     "cosh_out",
     "count_nonzero",
     "cummax",
@@ -889,6 +891,7 @@ __all__ = [
     "log1p",
     "log1p_",
     "log2",
+    "log2_",
     "log_sigmoid",
     "log_sigmoid_backward",
     "log_sigmoid_backward_out",
