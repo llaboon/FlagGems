@@ -19,9 +19,9 @@ import triton
 import triton.language as tl
 from _kunlunxin.utils.codegen_config_utils import CodeGenConfig
 
-from flag_gems.utils import pointwise_dynamic
+from ..utils.pointwise_dynamic import pointwise_dynamic
 
-from .sum import sum
+from .sum import sum as gems_sum
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +87,7 @@ def _l1_backward_scalar(input, target, grad_output):
 @triton.jit
 def _smooth_backward(input, target, grad_output, beta):
     diff = input.to(tl.float32) - target.to(tl.float32)
-    sign = tl.where(diff > 0.0, 1.0, tl.where(diff < 0.0, -1.0, 0.0))
-    grad = tl.where(tl.abs(diff) < beta, diff / beta, sign)
+    grad = tl.where(diff > beta, 1.0, tl.where(diff < -beta, -1.0, diff / beta))
     return grad * grad_output.to(tl.float32)
 
 
@@ -100,8 +99,7 @@ def _smooth_backward(input, target, grad_output, beta):
 @triton.jit
 def _smooth_backward_scalar(input, target, grad_output, beta):
     diff = input.to(tl.float32) - target.to(tl.float32)
-    sign = tl.where(diff > 0.0, 1.0, tl.where(diff < 0.0, -1.0, 0.0))
-    grad = tl.where(tl.abs(diff) < beta, diff / beta, sign)
+    grad = tl.where(diff > beta, 1.0, tl.where(diff < -beta, -1.0, diff / beta))
     return grad * grad_output
 
 
@@ -143,7 +141,7 @@ def smooth_l1_loss(input, target, reduction=1, beta: float = 1.0):
     if reduction == 0:
         return loss
     # Explicit gems sum (not torch.sum dispatch): the vendor reduction.
-    result = sum(loss)
+    result = gems_sum(loss)
     if reduction == 1:
         result = result / loss.numel()
     return result

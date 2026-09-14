@@ -529,6 +529,7 @@ from .sign import sign, sign_out
 from .signbit import signbit, signbit_out
 from .silu import silu, silu_, silu_backward
 from .sin import sin, sin_
+from .sinh import sinh, sinh_
 from .sinc import sinc, sinc_, special_sinc
 from .slice_backward import slice_backward
 from .slice_scatter import slice_scatter
@@ -1275,6 +1276,8 @@ __all__ = [
     "silu_backward",
     "sin",
     "sin_",
+    "sinh",
+    "sinh_",
     "sinc",
     "sinc_",
     "slice_backward",
