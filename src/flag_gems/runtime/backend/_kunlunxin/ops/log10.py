@@ -47,9 +47,32 @@ def log10_func(x):
     return tl.log(x.to(tl.float32)) * 0.4342944819032518
 
 
+# Separate CLOSED-vectorization config for the out-of-place path: the OPEN
+# config miscompiles int16-promoted inputs (ConvertTritonXPUToLLVM
+# "size mismatch when packing elements for LLVM struct"), see
+# test_log10_int_promotes_to_float.
+config_closed_ = CodeGenConfig(
+    512,
+    (65536, 65536, 65536),
+    32,
+    True,
+    prefer_1d_tile=True,
+    buffer_size_limit=4096,
+    isCloseVectorization=True,
+    kunlunAutoGrid=True,
+    unroll_num=8,
+)
+
+
+@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")], config=config_closed_)
+@triton.jit
+def log10_func_closed(x):
+    return tl.log(x.to(tl.float32)) * 0.4342944819032518
+
+
 def log10(A):
     logger.debug("GEMS_KUNLUNXIN LOG10")
-    return log10_func(A)
+    return log10_func_closed(A)
 
 
 def log10_(A):
