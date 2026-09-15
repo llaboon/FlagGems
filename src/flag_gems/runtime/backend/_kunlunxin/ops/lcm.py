@@ -19,7 +19,10 @@ import triton.language as tl
 
 from flag_gems.ops.lcm import _materialize_inputs
 
-from .gcd import _ITERS_32, _ITERS_64
+# lcm's signed-Euclidean loop bounds (previously exported by ops/gcd.py;
+# the gcd rewrite no longer defines these names).
+_ITERS_32 = 48
+_ITERS_64 = 96
 
 logger = logging.getLogger(__name__)
 
