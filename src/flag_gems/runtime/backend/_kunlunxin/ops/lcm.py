@@ -19,7 +19,10 @@ import triton.language as tl
 
 from flag_gems.ops.lcm import _materialize_inputs
 
-from .gcd import _ITERS_32, _ITERS_64
+# kunlunxin gcd.py was rewritten (define _ITERS_U16/U32/U64); keep lcm's
+# Euclidean loop bounds local to this module (values unchanged: 48/96).
+_ITERS_32 = 48
+_ITERS_64 = 96
 
 logger = logging.getLogger(__name__)
 
