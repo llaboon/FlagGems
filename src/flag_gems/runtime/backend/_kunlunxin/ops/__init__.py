@@ -38,6 +38,7 @@ from ._is_all_true import _is_all_true
 from ._jagged_to_padded_dense_forward import (  # noqa: F401
     _jagged_to_padded_dense_forward,
 )
+from ._masked_scale import _masked_scale
 from ._native_batch_norm_legit_functional import _native_batch_norm_legit_functional
 from ._native_batch_norm_legit_no_training import _native_batch_norm_legit_no_training
 from ._nested_view_from_buffer_copy import _nested_view_from_buffer_copy
@@ -311,6 +312,7 @@ from .linalg_det import linalg_det, linalg_det_out
 from .linalg_householder_product import linalg_householder_product
 from .linalg_ldl_factor import ldl_factor
 from .linalg_ldl_factor_ex import ldl_factor_ex
+from .linalg_ldl_solve import linalg_ldl_solve
 from .linalg_lstsq import linalg_lstsq
 from .linalg_lu import linalg_lu, linalg_lu_out  # noqa: F401
 from .linalg_lu_factor import linalg_lu_factor, linalg_lu_factor_out
@@ -370,6 +372,7 @@ from .median import median, median_dim, median_dim_values, median_out
 from .min import min, min_dim
 from .minimum import minimum
 from .miopen_batch_norm_backward import miopen_batch_norm_backward
+from .mish import mish, mish_
 from .mish_backward import mish_backward
 from .mm import mm, mm_out
 from .mode import mode
@@ -653,6 +656,7 @@ __all__ = [
     "_fused_adam_",
     "_index_put_impl_",
     "_is_all_true",
+    "_masked_scale",
     "_native_batch_norm_legit_functional",
     "_native_batch_norm_legit_no_training",
     "_nested_view_from_buffer_copy",
@@ -1000,6 +1004,7 @@ __all__ = [
     "linalg_det",
     "linalg_det_out",
     "linalg_householder_product",
+    "linalg_ldl_solve",
     "linalg_lstsq",
     "linalg_lu_factor",
     "linalg_lu_factor_ex",
@@ -1076,6 +1081,8 @@ __all__ = [
     "min_dim",
     "minimum",
     "miopen_batch_norm_backward",
+    "mish",
+    "mish_",
     "mish_backward",
     "mm",
     "mm_out",
