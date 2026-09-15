@@ -719,13 +719,14 @@ def _fwd_chunk_split(out, inp, M, N):
 # [TILE_M, N] multirow tile. That tile does an axis=1 reduce that is pathological
 # on XPU for medium N: as N grows TILE_M shrinks (=8192//N), the 2D reduce stops
 # amortizing and gems latency explodes (N=4096 -> 14.7ms / sp 0.016, N=256 ->
-# 3.0ms). Per-row 1D-reduce kernels (grid=(M,), base pointer pre-offset by pid*N
-# so the offset tensor is pid-independent and stays block-DMA) are 8-17x faster
-# for N>=512: N=4096 14.7->0.85ms, N=65536 43.7->19ms. But per-row is launch
-# starved for tiny N (N=256 3.0->6.1ms), where the multirow row-packing still
-# wins. So: N<=256 multirow, 256<N<=4096 single-pass per-row (out_grad cached in
-# regs, one load), N>4096 two-pass per-row multi-tile (out_grad reloaded to avoid
-# holding og+o simultaneously -> no reg spill on the wide tile).
+# 3.0ms) while the loads/stores stay on the slow masked-memory path even when
+# the mask is always true. Unmasking the always-true row mask (M % TILE_M == 0)
+# flips this completely: the same [TILE_M, N] block-DMA tile becomes faster than
+# the per-row 1D-reduce kernels for every N <= 4096 (e.g. N=4096 0.75->0.47ms,
+# N=1024 0.16->0.03ms, N=256 3.0->0.10ms). Per-row 1D-reduce kernels are kept for
+# huge rows (N > 4096, two-pass multi-tile; the unmasked full tiles run 16384
+# wide, tails stay 8192 wide) and N==1 is a flat pointwise op (scale == out_grad
+# element itself).
 BWD_MULTIROW_MAX_N = 4096
 BWD_SINGLE_TILE_MAX_N = 4096
 BWD_MT_TILE_N = 8192
@@ -1040,29 +1041,32 @@ def _backward_launch(output, grad_output, in_grad, M, N):
             num_warps=8,
         )
     elif N <= BWD_MULTIROW_MAX_N and (N & (N - 1)) == 0:
-        # small/medium pow2 N: pack TILE_M rows per program into one [TILE_M, N]
-        # contiguous block-DMA tile with the always-true row mask compiled away
-        # (NEED_MASK=False); a masked single-program tail launch covers the
-        # remaining M % TILE_M rows. non-pow2 N falls through to per-row.
+        # small/medium N: pack TILE_M rows per program into one [TILE_M, N]
+        # contiguous block-DMA tile. Requires pow2 N (tl.arange bounds).
+        # non-pow2 N falls through to the per-row masked single-pass kernel.
+        # TILE_M buckets ~8K elems/program fixed (min(16, 8192//N)):
+        # N=256 -> 16, N=1024 -> 8, N=2048 -> 4, N=4096 -> 2. Tiles over 8K
+        # elems (e.g. [4,4096]) hit XPU register-pressure OOB / illegal memory
+        # access on some shapes, so the bound is kept.
         if N == 4096:
-            # exception: a 4-row tile for N==4096 measures ~24% faster than the
-            # 2-row default and is verified exact.
+            # exception: a 4-row tile for N==4096 measures ~24% faster than
+            # the 2-row default and is verified exact (fp16/fp32/bf16, M =
+            # 100/4096/4098/8192/20000; no OOB, no masked-tail corruption).
             tile_m = 4
         else:
             tile_m = min(16, _prev_pow2(max(1, 8192 // N)))
         nfull, tail = divmod(M, tile_m)
-        if nfull:
-            log_softmax_backward_kernel_multirow[(nfull, 1, 1)](
-                output,
-                grad_output,
-                in_grad,
-                M,
-                N,
-                TILE_M=tile_m,
-                NEED_MASK=False,
-                buffer_size_limit=2048,
-                num_warps=8,
-            )
+        log_softmax_backward_kernel_multirow[(nfull, 1, 1)](
+            output,
+            grad_output,
+            in_grad,
+            M,
+            N,
+            TILE_M=tile_m,
+            NEED_MASK=False,
+            buffer_size_limit=2048,
+            num_warps=8,
+        )
         if tail:
             log_softmax_backward_kernel_multirow_tail[(1, 1, 1)](
                 output,
@@ -1076,7 +1080,8 @@ def _backward_launch(output, grad_output, in_grad, M, N):
                 num_warps=8,
             )
     elif N <= BWD_SINGLE_TILE_MAX_N:
-        # non-pow2 N <= 4096: masked single-pass per-row tile.
+        # non-pow2 N <= 4096 (or any N in the single-tile range that the
+        # multirow tile cannot express): masked single-pass per-row tile.
         grid = (M, 1, 1)
         log_softmax_backward_kernel_perrow[grid](
             output,
@@ -1090,9 +1095,13 @@ def _backward_launch(output, grad_output, in_grad, M, N):
             num_warps=8,
         )
     else:
-        # large N (N > 4096): per-row two-pass multi-tile. A 16384-wide tile is
-        # 17-20% faster than 8192 for non-bf16; bf16 miscompiles at 16384-wide
-        # so it always stays on the 8192-wide tile.
+        # large N (N > 4096): per-row two-pass multi-tile instead of the
+        # 3-kernel staged split reduction. Measured on XPU (10000, 65536)
+        # fp32: staged took 45 ms while the per-row two-pass takes 15.1 ms
+        # with a 16384-wide tile and 18.6 ms with 8192. A 16384-wide tile is
+        # also faster for non-exact N (e.g. (10000,40999) 14.4 vs 17.1 ms),
+        # but bf16 miscompiles at 16384-wide (measured maxdiff vs torch ~11.7
+        # vs 1.6e-2 at 8192), so bf16 always stays on the 8192-wide tile.
         tile_n = (
             BWD_MT_TILE_N if grad_output.dtype == torch.bfloat16 else BWD_MT_TILE_N_WIDE
         )
@@ -1191,6 +1200,78 @@ def log_softmax_backward(grad_output, output, dim, input_dtype):
         else:
             _backward_launch(output, grad_output, in_grad, M, N)
     return in_grad
+
+
+def log_softmax_out(self, dim, half_to_float=False, *, out):
+    logger.debug("GEMS_KUNLUNXIN LOG_SOFTMAX_OUT")
+    assert dim >= -self.ndim and dim < self.ndim, "Invalid dim"
+    dim = dim % self.ndim
+    dtype = torch.float32 if half_to_float else self.dtype
+    if out.dtype != dtype:
+        raise RuntimeError(
+            f"_log_softmax.out: expected out dtype {dtype}, got {out.dtype}"
+        )
+    if tuple(out.shape) != tuple(self.shape):
+        out.resize_(self.shape)
+
+    if self.numel() == 0:
+        # Empty input (any dim-size == 0): ATen semantics only resize the
+        # output and return; division by N below must not run.
+        return out
+
+    M = 1
+    for i in range(dim):
+        M *= self.shape[i]
+    N = self.shape[dim]
+    inp = self.contiguous()
+    K = inp.numel() // M // N
+    if N == 1 and out.is_contiguous():
+        # Degenerate reduction axis: one flat pointwise pass over the whole
+        # tensor (see log_softmax_kernel_n1). Layout-independent, so it also
+        # covers K > 1 without any transpose copy.
+        with torch_device_fn.device(inp.device):
+            _fwd_n1_flat(out, inp)
+        return out
+    if K > 1:
+        # Reduction over an interior dim: transpose so the reduced axis is
+        # contiguous, then run the fast K == 1 launch family into a contiguous
+        # scratch and mirror it back through a transposed view of out. The
+        # K > 1 per-row kernel (contiguous load + stride-K scatter store) is
+        # 18-43x slower on XPU than transpose + fast path + transposed copy.
+        # Both transposes go through aten._copy_from (the native strided copy)
+        # on purpose: `Tensor.contiguous()` is a gems-registered op, so inside
+        # `flag_gems.use_gems()` it becomes a gems strided pointwise copy that
+        # costs 2444 ms on (100, 65536, 100) fp16 versus 1.5 ms for the native
+        # copy (probed on XPU 7, 2026-08-29).
+        inp_t = torch.empty((M * K, N), dtype=inp.dtype, device=inp.device)
+        torch.ops.aten._copy_from(
+            inp.view(M, N, K).transpose(1, 2), inp_t.view(M, K, N), False
+        )
+        tmp = torch.empty((M * K, N), dtype=dtype, device=inp.device)
+        with torch_device_fn.device(inp.device):
+            _forward_launch(tmp, inp_t, M * K, N)
+        src = tmp.view(M, K, N).transpose(1, 2)
+        if out.is_contiguous():
+            torch.ops.aten._copy_from(src, out.view(M, N, K), False)
+        else:
+            scratch = torch.empty((M, N, K), dtype=dtype, device=out.device)
+            torch.ops.aten._copy_from(src, scratch, False)
+            torch.ops.aten._copy_from(scratch.view(self.shape), out, False)
+        return out
+    if not out.is_contiguous():
+        # The launch kernels write flat (M, N, K)-contiguous offsets; a
+        # strided out (e.g. a slice view) would be corrupted. Compute into a
+        # contiguous scratch, then mirror the result with the native strided
+        # copy (gems never overrides _copy_from), instead of the registered
+        # copy_ override.
+        tmp = torch.empty(self.shape, dtype=dtype, device=self.device)
+        with torch_device_fn.device(inp.device):
+            _forward_launch(tmp, inp, M, N, K)
+        torch.ops.aten._copy_from(tmp, out, False)
+        return out
+    with torch_device_fn.device(inp.device):
+        _forward_launch(out, inp, M, N, K)
+    return out
 
 
 def log_softmax_backward_out(grad_output, output, dim, input_dtype, *, out):

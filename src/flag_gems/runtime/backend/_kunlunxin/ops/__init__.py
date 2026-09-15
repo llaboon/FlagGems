@@ -30,12 +30,27 @@ from ._functional_sym_constrain_range_for_size import (
 from ._fused_adam import _fused_adam, _fused_adam_
 from ._fused_rms_norm import _fused_rms_norm  # noqa: F401
 from ._is_all_true import _is_all_true
-from ._native_batch_norm_legit_functional import _native_batch_norm_legit_functional
-from ._thnn_fused_lstm_cell_backward_impl import _thnn_fused_lstm_cell_backward_impl
 from ._jagged_to_padded_dense_forward import _jagged_to_padded_dense_forward
+from ._linalg_eigvals import _linalg_eigvals
+from ._native_batch_norm_legit_functional import _native_batch_norm_legit_functional
+from ._native_batch_norm_legit_no_training import _native_batch_norm_legit_no_training
+from ._nested_view_from_buffer_copy import _nested_view_from_buffer_copy
+from ._pdist_backward import _pdist_backward
+from ._pdist_forward import _pdist_forward, pdist
+from ._prelu_kernel import _prelu_kernel  # noqa: F401
+from ._scaled_dot_product_fused_attention_overrideable import (
+    _scaled_dot_product_fused_attention_overrideable,
+)
+from ._thnn_fused_lstm_cell_backward_impl import _thnn_fused_lstm_cell_backward_impl
+from ._unsafe_masked_index_put_accumulate import _unsafe_masked_index_put_accumulate
+from ._upsample_bilinear2d_aa import _upsample_bilinear2d_aa  # noqa: F401
+from ._upsample_nearest_exact2d_backward import _upsample_nearest_exact2d_backward
 from .abs import abs, abs_
-from .absolute import absolute
-from .acos import acos
+from .absolute import absolute, absolute_
+from .acos import acos, acos_
+from .acosh import acosh, acosh_
+from .adaptive_avg_pool2d import adaptive_avg_pool2d
+from .adaptive_max_pool2d import adaptive_max_pool2d
 from .adaptive_max_pool2d_backward import adaptive_max_pool2d_backward
 from .add import add, add_
 from .add_relu import _add_relu, _add_relu_
@@ -58,7 +73,7 @@ from .arange import arange, arange_start
 from .arccos import arccos, arccos_
 from .arccosh import arccosh_  # noqa: F401
 from .arcsin import arcsin, arcsin_, arcsin_out
-from .arcsinh import arcsinh, arcsinh_, arcsinh_out
+from .arcsinh import arcsinh, arcsinh_, arcsinh_out  # noqa: F401
 from .arctan import arctan, arctan_
 from .arctan2 import arctan2, arctan2_
 from .argmax import argmax
@@ -69,8 +84,9 @@ from .as_strided_scatter import as_strided_scatter
 from .asin import asin, asin_
 from .assert_async import _assert_async
 from .atan import atan, atan_
-from .atanh import atanh, atanh_, atanh_out
-from .attention import (
+from .atan2 import atan2, atan2_, atan2_out
+from .atanh import atanh, atanh_, atanh_out  # noqa: F401
+from .attention import (  # noqa: F401
     ScaleDotProductAttention,
     flash_attention_forward,
     flash_attn_varlen_func,
@@ -127,6 +143,7 @@ from .cdist_backward import _cdist_backward
 from .ceil import ceil, ceil_, ceil_out
 from .celu import celu, celu_
 from .cholesky_inverse import cholesky_inverse
+from .cholesky_solve import cholesky_solve, cholesky_solve_out
 from .clamp import (
     clamp,
     clamp_,
@@ -151,7 +168,7 @@ from .copy import copy, copy_
 from .copysign import copysign, copysign_out
 from .copysign_ import copysign_
 from .cos import cos, cos_
-from .cosh import cosh, cosh_, cosh_out
+from .cosh import cosh, cosh_, cosh_out  # noqa: F401
 from .count_nonzero import count_nonzero
 from .cudnn_batch_norm_backward import cudnn_batch_norm_backward  # noqa: F401
 from .cudnn_convolution import cudnn_convolution  # noqa: F401
@@ -242,7 +259,11 @@ from .hardswish_ import hardswish_
 from .heaviside_ import heaviside_  # noqa: F401
 from .histc import histc
 from .hstack import hstack
+from .hypot import hypot
+from .igamma_ import igamma_  # noqa: F401
+from .igammac import igammac, igammac_out
 from .igammac_ import igammac_, special_gammaincc
+from .im2col import im2col
 from .index import index
 from .index_add import index_add, index_add_
 from .index_copy_ import index_copy_
@@ -270,14 +291,38 @@ from .less_equal import less_equal, less_equal_scalar
 from .lgamma import lgamma, lgamma_
 from .lift_fresh import lift_fresh  # noqa: F401
 from .lift_fresh_copy import lift_fresh_copy
+from .linalg_cholesky import linalg_cholesky
+from .linalg_cross import linalg_cross, linalg_cross_out
+from .linalg_det import linalg_det, linalg_det_out
 from .linalg_householder_product import linalg_householder_product
+from .linalg_ldl_factor import ldl_factor
+from .linalg_ldl_factor_ex import ldl_factor_ex
+from .linalg_lstsq import linalg_lstsq
+from .linalg_lu_factor import linalg_lu_factor, linalg_lu_factor_out
+from .linalg_lu_factor_ex import linalg_lu_factor_ex, linalg_lu_factor_ex_out
+from .linalg_matrix_norm import linalg_matrix_norm
+from .linalg_slogdet import linalg_slogdet
+from .linalg_solve_triangular import (
+    linalg_solve_triangular,
+    linalg_solve_triangular_out,
+)
+from .linear_backward import linear_backward
 from .linspace import linspace
 from .log import log
-from .log10 import log10_, log10_out
 from .log1p import log1p, log1p_
 from .log2 import log2, log2_
+from .log10 import log10, log10_, log10_out  # noqa: F401
+from .log_ import log_  # noqa: F401
 from .log_sigmoid import log_sigmoid
-from .log_softmax import log_softmax, log_softmax_backward, log_softmax_backward_out
+from .log_sigmoid_backward import log_sigmoid_backward, log_sigmoid_backward_out
+from .log_sigmoid_forward import log_sigmoid_forward
+from .log_softmax import (
+    log_softmax,
+    log_softmax_backward,
+    log_softmax_backward_out,
+    log_softmax_out,
+)
+from .logaddexp import logaddexp, logaddexp_out
 from .logaddexp2 import logaddexp2, logaddexp2_out
 from .logcumsumexp import logcumsumexp, logcumsumexp_out
 from .logical_and import logical_and, logical_and_
@@ -288,6 +333,7 @@ from .logspace import logspace
 from .logsumexp import logsumexp
 from .lt import lt, lt_, lt_scalar, lt_scalar_
 from .lu_unpack import lu_unpack, lu_unpack_out
+from .margin_ranking_loss import margin_ranking_loss
 from .masked_fill import masked_fill, masked_fill_
 from .masked_scatter import masked_scatter, masked_scatter_
 from .masked_scatter_backward import masked_scatter_backward
@@ -366,7 +412,6 @@ from .pairwise_distance import pairwise_distance
 from .per_token_group_quant_fp8 import SUPPORTED_FP8_DTYPE, per_token_group_quant_fp8
 from .permute_copy import permute_copy
 from .pixel_unshuffle import pixel_unshuffle, pixel_unshuffle_out
-from .pairwise_distance import pairwise_distance
 from .polar import polar
 from .polygamma import polygamma, polygamma_, polygamma_out
 from .pow import (
@@ -429,19 +474,21 @@ from .scaled_mm import scaled_mm, scaled_mm_out
 from .scaled_softmax import scaled_softmax_backward, scaled_softmax_forward
 from .scatter import scatter, scatter_
 from .scatter_add_ import scatter_add_
+from .scatter_reduce import scatter_reduce, scatter_reduce_, scatter_reduce_out
+from .searchsorted import (
+    searchsorted,
+    searchsorted_out,
+    searchsorted_scalar,
+    searchsorted_scalar_out,
+)
 from .segment_reduce import (
     _segment_reduce_backward,
     _segment_reduce_backward_out,
     segment_reduce,
     segment_reduce_out,
 )
+from .select_backward import select_backward
 from .select_scatter import select_scatter
-from .segment_reduce import (
-    _segment_reduce_backward,
-    _segment_reduce_backward_out,
-    segment_reduce,
-    segment_reduce_out,
-)
 from .selu import selu, selu_
 from .sgn import sgn, sgn_out
 from .sgn_ import sgn_
@@ -461,7 +508,33 @@ from .softmax import softmax, softmax_backward, softmax_backward_out, softmax_ou
 from .softplus import softplus, softplus_backward
 from .softshrink import softshrink, softshrink_out
 from .sort import sort, sort_stable
+from .sparse_sampled_addmm import (  # noqa: F401
+    sparse_sampled_addmm,
+    sparse_sampled_addmm_out,
+)
+from .special_bessel_j0 import special_bessel_j0
+from .special_bessel_j1 import special_bessel_j1
+from .special_bessel_y0 import special_bessel_y0
 from .special_bessel_y1 import special_bessel_y1
+from .special_chebyshev_polynomial_u import special_chebyshev_polynomial_u
+from .special_chebyshev_polynomial_v import special_chebyshev_polynomial_v
+from .special_chebyshev_polynomial_w import (
+    special_chebyshev_polynomial_w,
+    special_chebyshev_polynomial_w_out,
+)
+from .special_digamma import special_digamma
+from .special_erfc import special_erfc
+from .special_erfcx import special_erfcx
+from .special_erfinv import special_erfinv, special_erfinv_, special_erfinv_out
+from .special_exp2 import special_exp2
+from .special_gammainc import special_gammainc
+from .special_gammaincc import special_gammaincc
+from .special_gammaln import special_gammaln, special_gammaln_out
+from .special_i0e import special_i0e, special_i0e_out
+from .special_i1 import special_i1, special_i1_out  # noqa: F401
+from .special_legendre_polynomial_p import special_legendre_polynomial_p
+from .special_log1p import special_log1p, special_log1p_out
+from .special_log_ndtr import special_log_ndtr, special_log_ndtr_
 from .special_log_softmax import special_log_softmax
 from .special_logsumexp import special_logsumexp
 from .special_modified_bessel_k0 import (
@@ -567,20 +640,15 @@ __all__ = [
     "_index_put_impl_",
     "_is_all_true",
     "_native_batch_norm_legit_functional",
-    "_thnn_fused_lstm_cell_backward_impl",
-    "_conv_depthwise2d",
+    "_native_batch_norm_legit_no_training",
+    "_nested_view_from_buffer_copy",
+    "_pdist_backward",
+    "_pdist_forward",
     "_safe_softmax",
+    "_scaled_dot_product_fused_attention_overrideable",
     "_segment_reduce_backward",
     "_segment_reduce_backward_out",
-    "digamma_",
-    "soft_margin_loss",
-    "soft_margin_loss_out",
-    "soft_margin_loss_backward",
-    "special_bessel_y1",
-    "special_log_softmax",
-    "special_logsumexp",
-    "softshrink",
-    "softshrink_out",
+    "_thnn_fused_lstm_cell_backward_impl",
     "_unique2",
     "_unsafe_masked_index_put_accumulate",
     "_upsample_bicubic2d_aa",
@@ -592,7 +660,12 @@ __all__ = [
     "absolute",
     "absolute_",
     "acos",
-    "adaptive_max_pool2d_backward",
+    "acos_",
+    "acosh",
+    "acosh_",
+    "adaptive_avg_pool2d",
+    "adaptive_max_pool2d",
+"adaptive_max_pool2d_backward",
     "add",
     "add_",
     "add_relu",
@@ -653,7 +726,6 @@ __all__ = [
     "atan_",
     "atanh",
     "atanh_",
-    "atanh_out",
     "avg_pool2d",
     "avg_pool2d_backward",
     "avg_pool3d",
@@ -701,6 +773,8 @@ __all__ = [
     "celu",
     "celu_",
     "cholesky_inverse",
+    "cholesky_solve",
+    "cholesky_solve_out",
     "clamp",
     "clamp_",
     "clamp_max",
@@ -838,7 +912,14 @@ __all__ = [
     "hadamard_transform",
     "hardsigmoid",
     "hardsigmoid_out",
+    "hardswish_",
+    "histc",
+    "hstack",
+    "hypot",
+    "igammac",
     "igammac_",
+    "igammac_out",
+    "im2col",
     "index",
     "index_add",
     "index_add_",
@@ -883,11 +964,24 @@ __all__ = [
     "lgamma",
     "lgamma_",
     "lift_fresh_copy",
+    "linalg_cholesky",
+    "linalg_cross",
+    "linalg_cross_out",
+    "linalg_det",
+    "linalg_det_out",
     "linalg_householder_product",
+    "linalg_lstsq",
+    "linalg_lu_factor",
+    "linalg_lu_factor_ex",
+    "linalg_lu_factor_ex_out",
+    "linalg_lu_factor_out",
+    "linalg_matrix_norm",
+    "linalg_slogdet",
+    "linalg_solve_triangular",
+    "linalg_solve_triangular_out",
+    "linear_backward",
     "linspace",
     "log",
-    "log10_",
-    "log10_out",
     "log1p",
     "log1p_",
     "log2",
@@ -899,6 +993,8 @@ __all__ = [
     "log_softmax",
     "log_softmax_backward",
     "log_softmax_backward_out",
+    "log_softmax_out",
+    "logaddexp",
     "logaddexp2",
     "logaddexp2_out",
     "logaddexp_out",
@@ -920,8 +1016,7 @@ __all__ = [
     "lt_scalar_",
     "lu_unpack",
     "lu_unpack_out",
-    "matmul_bf16",
-    "matmul_int8",
+    "margin_ranking_loss",
     "masked_fill",
     "masked_fill_",
     "masked_scatter",
@@ -1021,8 +1116,6 @@ __all__ = [
     "permute_copy",
     "pixel_unshuffle",
     "pixel_unshuffle_out",
-    "permute_copy",
-    "pairwise_distance",
     "polar",
     "polygamma",
     "polygamma_",
@@ -1115,8 +1208,6 @@ __all__ = [
     "segment_reduce_out",
     "select_backward",
     "select_scatter",
-    "segment_reduce",
-    "segment_reduce_out",
     "selu",
     "selu_",
     "sgn",
@@ -1156,7 +1247,43 @@ __all__ = [
     "softshrink_out",
     "sort",
     "sort_stable",
+    "special_bessel_j0",
+    "special_bessel_j1",
+    "special_bessel_y0",
+    "special_bessel_y1",
+    "special_chebyshev_polynomial_u",
+    "special_chebyshev_polynomial_v",
+    "special_chebyshev_polynomial_w",
+    "special_chebyshev_polynomial_w_out",
+    "special_digamma",
+    "special_erf",
+    "special_erfcx",
+    "special_erfinv",
+    "special_erfinv_",
+    "special_erfinv_out",
+    "special_exp2",
+    "special_gammainc",
     "special_gammaincc",
+    "special_gammaln",
+    "special_gammaln_out",
+    "special_i0e",
+    "special_i0e_out",
+    "special_legendre_polynomial_p",
+    "special_log1p_out",
+    "special_log_ndtr",
+    "special_log_ndtr_",
+    "special_log_softmax",
+    "special_logsumexp",
+    "special_modified_bessel_k0",
+    "special_modified_bessel_k0_out",
+    "special_multigammaln",
+    "special_ndtri",
+    "special_shifted_chebyshev_polynomial_t",
+    "special_shifted_chebyshev_polynomial_u",
+    "special_shifted_chebyshev_polynomial_u_",
+    "special_shifted_chebyshev_polynomial_v",
+    "special_shifted_chebyshev_polynomial_w",
+    "special_sinc",
     "sqrt",
     "sqrt_",
     "square",
@@ -1253,4 +1380,8 @@ __all__ = [
     "_upsample_nearest_exact1d_backward",
     "_upsample_nearest_exact1d_backward_grad_input",
     "_adaptive_avg_pool2d_backward",
+    "atanh_out",
+    "igamma_",
+    "log10_",
+    "log10_out",
 ]

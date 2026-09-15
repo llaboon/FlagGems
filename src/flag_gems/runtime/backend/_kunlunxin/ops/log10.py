@@ -47,6 +47,11 @@ def log10_func(x):
     return tl.log(x.to(tl.float32)) * 0.4342944819032518
 
 
+def log10(A):
+    logger.debug("GEMS_KUNLUNXIN LOG10")
+    return log10_func(A)
+
+
 def log10_(A):
     logger.debug("GEMS_KUNLUNXIN LOG10_")
     log10_func(A, out0=A)
