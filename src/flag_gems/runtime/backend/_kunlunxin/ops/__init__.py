@@ -35,6 +35,7 @@ from ._functional_sym_constrain_range_for_size import (
 from ._fused_adam import _fused_adam, _fused_adam_
 from ._fused_rms_norm import _fused_rms_norm  # noqa: F401
 from ._is_all_true import _is_all_true
+from ._masked_scale import _masked_scale
 from ._jagged_to_padded_dense_forward import (  # noqa: F401
     _jagged_to_padded_dense_forward,
 )
@@ -184,7 +185,6 @@ from .copy import copy, copy_
 from .copysign import copysign, copysign_, copysign_out
 from .cos import cos, cos_
 from .cosh import cosh, cosh_, cosh_out  # noqa: F401
-from .cosh import cosh_out
 from .count_nonzero import count_nonzero
 from .cudnn_batch_norm_backward import cudnn_batch_norm_backward  # noqa: F401
 from .cudnn_convolution import cudnn_convolution  # noqa: F401
@@ -259,7 +259,6 @@ from .fused_experts_impl import (
     outplace_fused_experts,
 )
 from .gather import gather, gather_backward
-from .gcd import gcd, gcd_, gcd_out
 from .gcd import gcd, gcd_out
 from .gcd_ import gcd_
 from .ge import ge, ge_scalar, greater_equal_
@@ -676,6 +675,7 @@ __all__ = [
     "_is_all_true",
     "_jagged_to_padded_dense_forward",
     "_linalg_eigvals",
+    "_masked_scale",
     "_native_batch_norm_legit_functional",
     "_native_batch_norm_legit_no_training",
     "_nested_view_from_buffer_copy",
@@ -854,6 +854,8 @@ __all__ = [
     "copysign_out",
     "cos",
     "cos_",
+    "cosh",
+    "cosh_",
     "cosh_out",
     "count_nonzero",
     "cummax",

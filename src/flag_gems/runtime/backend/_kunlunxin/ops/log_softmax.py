@@ -558,3 +558,12 @@ def log_softmax_backward_out(grad_output, output, dim, input_dtype, *, out):
     in_grad = log_softmax_backward(grad_output, output, dim, input_dtype)
     torch.ops.aten._copy_from(in_grad, out, False)
     return out
+
+
+def log_softmax_out(self, dim, half_to_float=False, *, out):
+    logger.debug("GEMS_KUNLUNXIN LOG_SOFTMAX_OUT")
+    result = log_softmax(self, dim, half_to_float)
+    if tuple(out.shape) != tuple(result.shape):
+        out.resize_(result.shape)
+    out.copy_(result)
+    return out

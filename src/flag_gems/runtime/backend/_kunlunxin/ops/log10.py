@@ -57,3 +57,7 @@ def log10_out(A, out):
     logger.debug("GEMS_KUNLUNXIN LOG10_OUT")
     log10_func(A, out0=out)
     return out
+
+
+def log10(A):
+    return log10_func(A)

@@ -72,3 +72,9 @@ def log2_func(x):
 def log2(A):
     logger.debug("GEMS_KUNLUNXIN LOG2")
     return log2_func(A)
+
+
+def log2_(A):
+    logger.debug("GEMS_KUNLUNXIN LOG2 INPLACE")
+    log2_func(A, out0=A)
+    return A

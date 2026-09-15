@@ -493,3 +493,71 @@ def nll_loss2d_backward(
         )
 
     return grad_input
+
+
+def nll_loss_nd_forward(
+    input: torch.Tensor,
+    target: torch.Tensor,
+    weight: torch.Tensor = None,
+    reduction: int = 1,
+    ignore_index: int = -100,
+):
+    logger.debug("GEMS_KUNLUNXIN NLL LOSS ND FWD")
+    if input.numel() == 0:
+        # Empty-input semantics (matches torch): mean->nan, none->empty(target shape), sum->0; total_weight=0
+        if reduction == 0:
+            loss = torch.empty(target.shape, dtype=input.dtype, device=input.device)
+        elif reduction == 1:
+            loss = torch.full((), float("nan"), dtype=input.dtype, device=input.device)
+        else:
+            loss = torch.zeros((), dtype=input.dtype, device=input.device)
+        total_weight = torch.zeros((), dtype=input.dtype, device=input.device)
+        return loss, total_weight
+    if input.dim() < 3:
+        return nll_loss_forward(
+            input, target, weight=weight, reduction=reduction, ignore_index=ignore_index
+        )
+
+    return nll_loss2d_forward(
+        input, target, weight=weight, reduction=reduction, ignore_index=ignore_index
+    )
+
+def nll_loss_nd_backward(
+    grad_output: torch.Tensor,
+    input: torch.Tensor,
+    target: torch.Tensor,
+    weight: torch.Tensor = None,
+    reduction: int = 1,
+    ignore_index: int = -100,
+    total_weight: torch.Tensor = None,
+):
+    logger.debug("GEMS_KUNLUNXIN NLL LOSS ND BWD")
+    if input.numel() == 0:
+        return torch.empty_like(input)
+    if input.dim() < 3:
+        return nll_loss_backward(
+            grad_output,
+            input,
+            target,
+            weight=weight,
+            reduction=reduction,
+            ignore_index=ignore_index,
+            total_weight=total_weight,
+        )
+
+    return nll_loss2d_backward(
+        grad_output,
+        input,
+        target,
+        weight=weight,
+        reduction=reduction,
+        ignore_index=ignore_index,
+        total_weight=total_weight,
+    )
+
+def nll_loss2d(self, target, weight=None, reduction=1, ignore_index=-100):
+    logger.debug("GEMS_KUNLUNXIN NLL_LOSS2D")
+    output, _ = torch.ops.aten.nll_loss2d_forward(
+        self, target, weight, reduction, ignore_index
+    )
+    return output

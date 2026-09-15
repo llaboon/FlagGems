@@ -50,3 +50,17 @@ def cosh_func(x):
 def cosh_out(A, out):
     logger.debug("GEMS_KUNLUNXIN COSH_OUT")
     return cosh_func(A, out0=out)
+
+
+def cosh(x, *, out=None):
+    logger.debug("GEMS_KUNLUNXIN COSH FORWARD")
+    if out is None:
+        return cosh_func(x)
+    cosh_func(x, out0=out)
+    return out
+
+
+def cosh_(x):
+    logger.debug("GEMS_KUNLUNXIN COSH INPLACE")
+    cosh_func(x, out0=x)
+    return x
