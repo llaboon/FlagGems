@@ -80,12 +80,6 @@ def _jagged_to_padded_dense_forward(values, offsets, max_lengths, padding_value=
     """Convert a jagged (variable-length) tensor to a padded dense tensor."""
     logger.debug("GEMS JAGGED TO PADDED DENSE FORWARD")
 
-    Returns:
-        Padded dense tensor
-    """
-    logger.debug("GEMS_KUNLUNXIN JAGGED TO PADDED DENSE FORWARD")
-
-    # Currently only supports single batch dimension
     if not isinstance(offsets, (list, tuple)):
         offsets = [offsets]
     if not isinstance(max_lengths, (list, tuple)):
@@ -96,7 +90,6 @@ def _jagged_to_padded_dense_forward(values, offsets, max_lengths, padding_value=
         num_batch_dims == 1
     ), f"Only single batch dimension is supported, got {num_batch_dims}"
 
-    # Single batch dimension: 1D values, 1D offsets
     offsets_0 = offsets[0]
     batch_size = offsets_0.numel() - 1
     max_length = max_lengths[0]
