@@ -30,7 +30,11 @@ SHAPES = (
         (4, 8, 64, 127),
     ]
 )
+IS_KUNLUNXIN = flag_gems.vendor_name == "kunlunxin"
+
 DTYPES = [torch.float32] if QUICK_MODE else utils.FLOAT_DTYPES + [torch.float64]
+if IS_KUNLUNXIN:
+    DTYPES = [torch.float32] if QUICK_MODE else utils.FLOAT_DTYPES
 
 
 def _make_grad_output(shape, dtype, noncontiguous=False):
