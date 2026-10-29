@@ -18,10 +18,6 @@ import torch
 import triton
 import triton.language as tl
 
-from flag_gems.ops.cumulative_trapezoid import (
-    cumulative_trapezoid as _shared_cumulative_trapezoid,
-)
-
 logger = logging.getLogger(__name__)
 
 _FAST_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
@@ -129,6 +125,47 @@ def _fast_plan(rows, n, dtype):
     return g, bm
 
 
+@triton.jit
+def _cumtrapz_chunked_kernel(
+    y_ptr,
+    out_ptr,
+    N,
+    inner,
+    stride_row_in,
+    stride_row_out,
+    scale,
+    BLOCK: tl.constexpr,
+):
+    """One program per (outer, inner) row, scanned in fixed-size chunks.
+
+    A carry register forwards the running sum between chunks, so the tile stays
+    small enough for every backend build while each element is still read once
+    and written once.
+    """
+    pid = tl.program_id(0)
+    row = pid // inner
+    col = pid % inner
+    in_base = row * stride_row_in + col
+    out_base = row * stride_row_out + col
+    L = N - 1
+    carry = tl.zeros((), dtype=tl.float32)
+    for start in range(0, L, BLOCK):
+        k = start + tl.arange(0, BLOCK)
+        mask = k < L
+        a = tl.load(y_ptr + in_base + k * inner, mask=mask, other=0.0).to(tl.float32)
+        b = tl.load(y_ptr + in_base + (k + 1) * inner, mask=mask, other=0.0).to(
+            tl.float32
+        )
+        t = (a + b) * 0.5
+        cs = tl.cumsum(t, axis=0) + carry
+        tl.store(
+            out_ptr + out_base + k * inner,
+            (cs * scale).to(out_ptr.dtype.element_ty),
+            mask=mask,
+        )
+        carry += tl.sum(t, axis=0)
+
+
 def cumulative_trapezoid(y, *, dx=1, dim=-1):
     logger.debug("GEMS CUMULATIVE_TRAPEZOID")
 
@@ -189,4 +226,17 @@ def cumulative_trapezoid(y, *, dx=1, dim=-1):
         )
         return output
 
-    return _shared_cumulative_trapezoid(y, dx=dx, dim=dim)
+    output = torch.empty(out_sizes, dtype=y.dtype, device=y.device)
+    yc = y.contiguous()
+    _cumtrapz_chunked_kernel[(outer * inner,)](
+        yc,
+        output,
+        N,
+        inner,
+        N * inner,
+        (N - 1) * inner,
+        float(dx),
+        BLOCK=1024,
+        num_warps=4,
+    )
+    return output
