@@ -21,11 +21,11 @@ config_ = CodeGenConfig(
 )
 
 
-@pointwise_dynamic(promotion_methods=[(0, "DEFAULT")], config=config_)
+@pointwise_dynamic(promotion_methods=[(0, "INT_TO_FLOAT")], config=config_)
 @triton.jit
 def atanh_func(x):
     x32 = x.to(tl.float32)
-    return (0.5 * tl.log((1.0 + x32) / (1.0 - x32))).to(x.dtype)
+    return (0.5 * (tl.log(1.0 + x32) - tl.log(1.0 - x32))).to(x.dtype)
 
 
 def atanh(A):
